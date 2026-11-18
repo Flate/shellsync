@@ -23,6 +23,22 @@ append = ["/opt/shellsync-test"]
 [aliases]
 greet = "echo hello"
 ll = { zsh = "ls -lh", nu = "ls -l" }
+over = "echo base"
+
+# `ls` is on PATH everywhere, so this applies and overrides the base alias.
+[tool.ls.aliases]
+over = "echo tool"
+
+[tool.shellsync-no-such-tool.aliases]
+missing_tool = "echo nope"
+
+[tool.root]
+exists = "/"
+env.FROM_TOOL = "yes"
+
+[tool.nowhere]
+exists = "/shellsync/does/not/exist"
+env.NOT_SET = "no"
 "#;
 
 fn has(shell: &str) -> bool {
@@ -104,7 +120,7 @@ fn zsh_end_to_end() {
     }
     let home = setup();
     let mut c = cmd("zsh", &home);
-    c.args(["-i", "-c", r#"print -r -- $GOPATH; print -r -- $TRICKY; print -r -- $ONLY_ZSH; print -r -- $PATH; alias greet; alias ll; print -r -- $FOR_SH"#]);
+    c.args(["-i", "-c", r#"print -r -- $GOPATH; print -r -- $TRICKY; print -r -- $ONLY_ZSH; print -r -- $PATH; alias greet; alias ll; print -r -- $FOR_SH; alias over; print -r -- ${+aliases[missing_tool]}; print -r -- ${FROM_TOOL:-unset} ${NOT_SET:-unset}"#]);
     let out = run(c);
     let lines: Vec<&str> = out.lines().collect();
     let h = home.display();
@@ -125,6 +141,9 @@ fn zsh_end_to_end() {
     assert_eq!(lines[4], "greet='echo hello'");
     assert_eq!(lines[5], "ll='ls -lh'");
     assert_eq!(lines[6], "s");
+    assert_eq!(lines[7], "over='echo tool'");
+    assert_eq!(lines[8], "0", "missing tool's alias is not defined");
+    assert_eq!(lines[9], "yes unset");
 }
 
 #[test]
@@ -142,7 +161,7 @@ fn nu_end_to_end() {
         .arg(config_nu)
         .args([
             "-c",
-            r#"print $env.GOPATH; print $env.TRICKY; print ($env.ONLY_ZSH? | default 'unset'); print ($env.PATH | str join ':'); print (scope aliases | where name in [greet ll] | sort-by name | get expansion | str join ';'); print ($env.FOR_SH? | default 'unset')"#,
+            r#"print $env.GOPATH; print $env.TRICKY; print ($env.ONLY_ZSH? | default 'unset'); print ($env.PATH | str join ':'); print (scope aliases | where name in [greet ll] | sort-by name | get expansion | str join ';'); print ($env.FOR_SH? | default 'unset'); print (scope aliases | where name in [over missing_tool] | get expansion | str join ';'); print $"($env.FROM_TOOL? | default 'unset') ($env.NOT_SET? | default 'unset')""#,
         ]);
     let out = run(c);
     let lines: Vec<&str> = out.lines().collect();
@@ -158,6 +177,8 @@ fn nu_end_to_end() {
     assert!(lines[3].ends_with(":/opt/shellsync-test"), "{}", lines[3]);
     assert_eq!(lines[4], "echo hello;ls -l");
     assert_eq!(lines[5], "unset");
+    assert_eq!(lines[6], "echo tool", "only the applied tool's alias");
+    assert_eq!(lines[7], "yes unset");
 }
 
 /// Runs `code` in the given shell with the installed hooks and returns

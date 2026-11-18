@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Dialect, Shell, home_relative};
 use crate::Paths;
+use crate::config::Condition;
 use crate::template::{self, Seg};
 
 pub struct Zsh;
@@ -25,6 +26,22 @@ impl Dialect for Zsh {
 
     fn alias(name: &str, body: &str) -> String {
         format!("alias -- {name}={}\n", quote(body))
+    }
+
+    /// Builtins only, so startup spawns no process. `whence -p` searches PATH
+    /// only (not aliases or functions) and skips files that can't run.
+    fn guard(conditions: &[Condition]) -> Option<(String, String)> {
+        let tests: Vec<String> = conditions
+            .iter()
+            .map(|c| match c {
+                Condition::Command(name) => {
+                    format!("whence -p {} >/dev/null", template_word(name))
+                }
+                Condition::Executable(path) => format!("[[ -x {} ]]", template_word(path)),
+                Condition::Exists(path) => format!("[[ -e {} ]]", template_word(path)),
+            })
+            .collect();
+        Some((format!("if {}; then\n", tests.join(" && ")), "fi\n".into()))
     }
 }
 
@@ -138,6 +155,51 @@ mod tests {
                 "",
                 "# --- init ---",
                 "setopt autocd",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn renders_tools_with_startup_checks() {
+        let cfg = r#"
+            [aliases]
+            g = "git"
+            [zsh]
+            init = "base init"
+            [tool.eza.aliases]
+            ls = "eza"
+            [tool.borg]
+            command = "~/bin/borg"
+            exists = "/mnt/x"
+            env.TMPDIR = "/tmp/b"
+            [tool.nu-only.aliases]
+            x = { nu = "y" }
+            [tool.fzf]
+            sh.init = "source fzf.zsh"
+        "#;
+        assert_eq!(
+            render_body(cfg, Shell::Zsh),
+            [
+                "alias -- g='git'",
+                "",
+                "# tool: eza",
+                r#"if whence -p "eza" >/dev/null; then"#,
+                "alias -- ls='eza'",
+                "fi",
+                "",
+                "# tool: borg",
+                r#"if [[ -x "${HOME}/bin/borg" ]] && [[ -e "/mnt/x" ]]; then"#,
+                r#"export TMPDIR="/tmp/b""#,
+                "fi",
+                "",
+                "# tool: fzf",
+                r#"if whence -p "fzf" >/dev/null; then"#,
+                "source fzf.zsh",
+                "fi",
+                "",
+                "# --- init ---",
+                "base init",
             ]
             .join("\n")
         );

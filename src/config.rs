@@ -63,8 +63,10 @@ impl Value {
     }
 }
 
+/// Entries that apply together: the top level of the config, or one
+/// `[tool.X]` table.
 #[derive(Debug, Default, PartialEq)]
-pub struct Config {
+pub struct Entries {
     pub env: Vec<(String, Value)>,
     pub path_prepend: Vec<Value>,
     pub path_append: Vec<Value>,
@@ -73,7 +75,7 @@ pub struct Config {
     pub init_blocks: Vec<(Target, String)>,
 }
 
-impl Config {
+impl Entries {
     /// The init code for `shell`: every block that covers it, in file order.
     pub fn init(&self, shell: Shell) -> String {
         self.init_blocks
@@ -83,6 +85,44 @@ impl Config {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// Something that must hold for a `[tool.X]` table to apply. Names and paths
+/// are templates (`~`, `$NAME`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Condition {
+    /// A command with this name is on PATH and can run.
+    Command(String),
+    /// The file at this path can run.
+    Executable(String),
+    /// A file or directory exists at this path.
+    Exists(String),
+}
+
+impl Condition {
+    /// Why the condition failed, for comments in generated files.
+    pub fn failure(&self) -> String {
+        match self {
+            Condition::Command(name) => format!("`{name}` not on PATH"),
+            Condition::Executable(path) => format!("`{path}` not executable"),
+            Condition::Exists(path) => format!("`{path}` does not exist"),
+        }
+    }
+}
+
+/// A `[tool.X]` table: entries that apply only if all conditions hold.
+#[derive(Debug, PartialEq)]
+pub struct Tool {
+    pub name: String,
+    pub conditions: Vec<Condition>,
+    pub entries: Entries,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Config {
+    /// Entries outside `[tool]` tables; they always apply.
+    pub entries: Entries,
+    pub tools: Vec<Tool>,
 }
 
 #[derive(Debug)]
@@ -106,78 +146,161 @@ impl Config {
         let mut cfg = Config::default();
 
         for (key, val) in &table {
-            match key.as_str() {
-                "env" => {
-                    for (name, v) in as_table(val, "env")? {
-                        let ctx = format!("env.{name}");
-                        if !is_env_name(name) {
-                            return err(format!(
-                                "{ctx}: invalid variable name (use letters, digits and _)"
-                            ));
-                        }
-                        cfg.env.push((name.to_string(), value(v, &ctx, true)?));
-                    }
+            if key == "tool" {
+                for (name, t) in as_table(val, "tool")? {
+                    let ctx = format!("tool.{name}");
+                    cfg.tools.push(tool(name, as_table(t, &ctx)?, &ctx)?);
                 }
-                "path" => {
-                    for (k, v) in as_table(val, "path")? {
-                        let ctx = format!("path.{k}");
-                        let list = match k.as_str() {
-                            "prepend" => &mut cfg.path_prepend,
-                            "append" => &mut cfg.path_append,
-                            _ => {
-                                return err(format!(
-                                    "{ctx}: unknown key (expected `prepend` or `append`)"
-                                ));
-                            }
-                        };
-                        let Toml::Array(items) = v else {
-                            return err(format!("{ctx}: expected an array of directories"));
-                        };
-                        for (i, item) in items.iter().enumerate() {
-                            list.push(value(item, &format!("{ctx}[{i}]"), false)?);
-                        }
-                    }
-                }
-                "aliases" => {
-                    for (name, v) in as_table(val, "aliases")? {
-                        let ctx = format!("aliases.{name}");
-                        if !is_alias_name(name) {
-                            return err(format!("{ctx}: invalid alias name"));
-                        }
-                        let v = value(v, &ctx, false)?;
-                        if Shell::ALL
-                            .iter()
-                            .any(|s| v.get(*s).is_some_and(|b| b.trim().is_empty()))
-                        {
-                            return err(format!("{ctx}: alias body is empty"));
-                        }
-                        cfg.aliases.push((name.to_string(), v));
-                    }
-                }
-                _ => {
-                    let Some(target) = Target::named(key) else {
-                        let mut sections = vec!["env", "path", "aliases"];
-                        sections.extend(Target::names());
-                        return err(format!(
-                            "unknown section `{key}` (expected {})",
-                            one_of(&sections)
-                        ));
-                    };
-                    for (k, v) in as_table(val, key)? {
-                        let ctx = format!("{key}.{k}");
-                        if k != "init" {
-                            return err(format!("{ctx}: unknown key (expected `init`)"));
-                        }
-                        let Toml::String(s) = v else {
-                            return err(format!("{ctx}: expected a string of {key} code"));
-                        };
-                        cfg.init_blocks.push((target, s.clone()));
-                    }
-                }
+            } else if !section(&mut cfg.entries, key, val, "")? {
+                let mut sections = vec!["env", "path", "aliases", "tool"];
+                sections.extend(Target::names());
+                return err(format!(
+                    "unknown section `{key}` (expected {})",
+                    one_of(&sections)
+                ));
             }
         }
         Ok(cfg)
     }
+}
+
+/// Parses one `[tool.X]` table. Without `command` or `exists`, the tool's
+/// name is the command to look for.
+fn tool(name: &str, table: &Table, ctx: &str) -> Result<Tool, Error> {
+    if name.trim().is_empty() {
+        return err(format!("{ctx}: the tool name is empty"));
+    }
+    let prefix = format!("{ctx}.");
+    let mut conditions = Vec::new();
+    let mut entries = Entries::default();
+    for (key, val) in table {
+        let key_ctx = format!("{prefix}{key}");
+        match key.as_str() {
+            "command" => {
+                for s in strings(val, &key_ctx)? {
+                    conditions.push(if s.contains('/') || s.starts_with('~') {
+                        Condition::Executable(s)
+                    } else {
+                        Condition::Command(s)
+                    });
+                }
+            }
+            "exists" => {
+                for s in strings(val, &key_ctx)? {
+                    conditions.push(Condition::Exists(s));
+                }
+            }
+            _ => {
+                if !section(&mut entries, key, val, &prefix)? {
+                    let mut keys = vec!["command", "exists", "env", "path", "aliases"];
+                    keys.extend(Target::names());
+                    return err(format!(
+                        "{key_ctx}: unknown key (expected {})",
+                        one_of(&keys)
+                    ));
+                }
+            }
+        }
+    }
+    if conditions.is_empty() {
+        conditions.push(Condition::Command(name.to_string()));
+    }
+    Ok(Tool {
+        name: name.to_string(),
+        conditions,
+        entries,
+    })
+}
+
+/// A string or a non-empty array of strings, none of them empty.
+fn strings(v: &Toml, ctx: &str) -> Result<Vec<String>, Error> {
+    let items = match v {
+        Toml::String(s) => vec![s.clone()],
+        Toml::Array(items) if !items.is_empty() => items
+            .iter()
+            .map(|item| match item {
+                Toml::String(s) => Ok(s.clone()),
+                _ => err(format!("{ctx}: expected strings")),
+            })
+            .collect::<Result<_, _>>()?,
+        _ => return err(format!("{ctx}: expected a string or an array of strings")),
+    };
+    if items.iter().any(|s| s.trim().is_empty()) {
+        return err(format!("{ctx}: empty string"));
+    }
+    Ok(items)
+}
+
+/// Parses a section that can appear at the top level and in `[tool.X]`
+/// tables into `entries`. Returns false if `key` is not such a section.
+/// `prefix` is prepended to keys in error messages.
+fn section(entries: &mut Entries, key: &str, val: &Toml, prefix: &str) -> Result<bool, Error> {
+    let ctx = format!("{prefix}{key}");
+    match key {
+        "env" => {
+            for (name, v) in as_table(val, &ctx)? {
+                let ctx = format!("{ctx}.{name}");
+                if !is_env_name(name) {
+                    return err(format!(
+                        "{ctx}: invalid variable name (use letters, digits and _)"
+                    ));
+                }
+                entries.env.push((name.to_string(), value(v, &ctx, true)?));
+            }
+        }
+        "path" => {
+            for (k, v) in as_table(val, &ctx)? {
+                let ctx = format!("{ctx}.{k}");
+                let list = match k.as_str() {
+                    "prepend" => &mut entries.path_prepend,
+                    "append" => &mut entries.path_append,
+                    _ => {
+                        return err(format!(
+                            "{ctx}: unknown key (expected `prepend` or `append`)"
+                        ));
+                    }
+                };
+                let Toml::Array(items) = v else {
+                    return err(format!("{ctx}: expected an array of directories"));
+                };
+                for (i, item) in items.iter().enumerate() {
+                    list.push(value(item, &format!("{ctx}[{i}]"), false)?);
+                }
+            }
+        }
+        "aliases" => {
+            for (name, v) in as_table(val, &ctx)? {
+                let ctx = format!("{ctx}.{name}");
+                if !is_alias_name(name) {
+                    return err(format!("{ctx}: invalid alias name"));
+                }
+                let v = value(v, &ctx, false)?;
+                if Shell::ALL
+                    .iter()
+                    .any(|s| v.get(*s).is_some_and(|b| b.trim().is_empty()))
+                {
+                    return err(format!("{ctx}: alias body is empty"));
+                }
+                entries.aliases.push((name.to_string(), v));
+            }
+        }
+        _ => {
+            let Some(target) = Target::named(key) else {
+                return Ok(false);
+            };
+            for (k, v) in as_table(val, &ctx)? {
+                let ctx = format!("{ctx}.{k}");
+                if k != "init" {
+                    return err(format!("{ctx}: unknown key (expected `init`)"));
+                }
+                let Toml::String(s) = v else {
+                    return err(format!("{ctx}: expected a string of {key} code"));
+                };
+                entries.init_blocks.push((target, s.clone()));
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn as_table<'a>(v: &'a Toml, ctx: &str) -> Result<&'a Table, Error> {
@@ -272,6 +395,8 @@ mod tests {
             "#,
         )
         .unwrap();
+        assert!(cfg.tools.is_empty());
+        let cfg = cfg.entries;
         let names: Vec<_> = cfg.env.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(names, ["ZED", "ALPHA", "PAGER"]);
         assert_eq!(cfg.env[1].1, Value::All("1".into()));
@@ -294,7 +419,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let get = |i: usize, shell| cfg.aliases[i].1.get(shell);
+        let get = |i: usize, shell| cfg.entries.aliases[i].1.get(shell);
         assert_eq!(get(0, Shell::Zsh), Some("for sh"));
         assert_eq!(get(0, Shell::Nu), Some("for nu"));
         assert_eq!(get(1, Shell::Zsh), Some("for zsh"));
@@ -314,8 +439,8 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(cfg.init(Shell::Zsh), "zsh first\nshared");
-        assert_eq!(cfg.init(Shell::Nu), "nu only");
+        assert_eq!(cfg.entries.init(Shell::Zsh), "zsh first\nshared");
+        assert_eq!(cfg.entries.init(Shell::Nu), "nu only");
     }
 
     #[test]
@@ -331,8 +456,72 @@ mod tests {
         assert!(e("[aliases]\nx = ''").contains("empty"));
         assert_eq!(
             e("[bogus]"),
-            "unknown section `bogus` (expected env, path, aliases, sh, zsh or nu)"
+            "unknown section `bogus` (expected env, path, aliases, tool, sh, zsh or nu)"
         );
         assert!(e("[env\n").contains("line 1"));
+        assert_eq!(
+            e("[tool.eza]\nfoo = 1"),
+            "tool.eza.foo: unknown key (expected command, exists, env, path, aliases, sh, zsh or nu)"
+        );
+        assert!(e("[tool.eza.env]\n\"BAD-NAME\" = 'x'").starts_with("tool.eza.env.BAD-NAME"));
+        assert!(e("[tool.eza.aliases]\nx = { fish = 'x' }").starts_with("tool.eza.aliases.x.fish"));
+        assert!(e("[tool.eza]\ncommand = []").contains("expected a string or an array"));
+        assert!(e("[tool.eza]\nexists = ['']").contains("empty string"));
+        assert!(e("[tool.eza]\ncommand = 1").starts_with("tool.eza.command"));
+        assert!(e("[tool.x.tool.y]").contains("unknown key"));
+        assert!(e("[tool.' '.aliases]\nx = 'y'").contains("tool name is empty"));
+    }
+
+    #[test]
+    fn parses_tools() {
+        let cfg = Config::parse(
+            r#"
+            [aliases]
+            g = "git"
+
+            [tool.eza.aliases]
+            ls = "eza"
+
+            [tool.borg]
+            command = "/mnt/Private/bin/borg"
+            env.TMPDIR = "/mnt/Private/borg-tmp"
+
+            [tool.android]
+            exists = "~/Library/Android/sdk"
+            path.append = ["~/Library/Android/sdk/platform-tools"]
+
+            [tool.py]
+            command = ["python3", "~/bin/uv"]
+            exists = ["/a", "/b"]
+            zsh.init = "x"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.entries.aliases.len(), 1);
+        let names: Vec<_> = cfg.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["eza", "borg", "android", "py"]);
+        use Condition::*;
+        assert_eq!(cfg.tools[0].conditions, [Command("eza".into())]);
+        assert_eq!(cfg.tools[0].entries.aliases[0].0, "ls");
+        assert_eq!(
+            cfg.tools[1].conditions,
+            [Executable("/mnt/Private/bin/borg".into())]
+        );
+        assert_eq!(cfg.tools[1].entries.env[0].0, "TMPDIR");
+        assert_eq!(
+            cfg.tools[2].conditions,
+            [Exists("~/Library/Android/sdk".into())]
+        );
+        assert_eq!(cfg.tools[2].entries.path_append.len(), 1);
+        assert_eq!(
+            cfg.tools[3].conditions,
+            [
+                Command("python3".into()),
+                Executable("~/bin/uv".into()),
+                Exists("/a".into()),
+                Exists("/b".into()),
+            ]
+        );
+        assert_eq!(cfg.tools[3].entries.init(Shell::Zsh), "x");
     }
 }

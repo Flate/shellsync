@@ -1,5 +1,6 @@
 mod config;
 mod hooks;
+mod probe;
 mod shell;
 mod template;
 
@@ -10,8 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::SystemTime;
 
-use config::Config;
+use config::{Config, Entries};
 use hooks::HookFile;
+use probe::Probe;
 use shell::Shell;
 
 const USAGE: &str = "\
@@ -140,7 +142,12 @@ fn run(args: Vec<String>) -> Result {
             let cfg = load(&paths.config)?;
             print!(
                 "{}",
-                shell::render(&cfg, shell, &paths.config.display().to_string())
+                shell::render(
+                    &cfg,
+                    shell,
+                    &paths.config.display().to_string(),
+                    &Probe::from_env(),
+                )
             );
             Ok(())
         }
@@ -245,10 +252,11 @@ fn build(paths: &Paths, if_stale: bool) -> Result<bool> {
     fs::create_dir_all(&paths.out_dir)
         .map_err(|e| format!("creating {}: {e}", paths.out_dir.display()))?;
     let source = paths.config.display().to_string();
+    let probe = Probe::from_env();
     for shell in Shell::ALL {
         write_atomic(
             &paths.output(shell),
-            &shell::render(&cfg, shell, &source),
+            &shell::render(&cfg, shell, &source, &probe),
             stamp,
         )?;
     }
@@ -263,12 +271,17 @@ fn check(paths: &Paths) -> Result {
         ));
     }
     let cfg = load(&paths.config)?;
+    let all: Vec<&Entries> = std::iter::once(&cfg.entries)
+        .chain(cfg.tools.iter().map(|t| &t.entries))
+        .collect();
+    let count = |f: fn(&Entries) -> usize| all.iter().map(|e| f(e)).sum::<usize>();
     println!(
-        "{}: ok ({} env vars, {} path entries, {} aliases)",
+        "{}: ok ({} env vars, {} path entries, {} aliases, {} tools)",
         paths.config.display(),
-        cfg.env.len(),
-        cfg.path_prepend.len() + cfg.path_append.len(),
-        cfg.aliases.len()
+        count(|e| e.env.len()),
+        count(|e| e.path_prepend.len() + e.path_append.len()),
+        count(|e| e.aliases.len()),
+        cfg.tools.len()
     );
     Ok(())
 }

@@ -28,6 +28,12 @@ g = "git"
 gs = "git status"
 # ll = { sh = "ls -lh", nu = "ls -l" }
 
+# Entries under [tool.X] apply only where X is installed. zsh checks when a
+# shell starts; nushell when the files are built (run `shellsync build` after
+# installing a tool). See the README for `command` and `exists`.
+# [tool.eza.aliases]
+# ls = "eza --long --header"
+
 [zsh]
 # Raw zsh code, appended to the generated file.
 init = '''

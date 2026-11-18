@@ -74,6 +74,7 @@ if it exists.
 | `[zsh]`     | `init = '''...'''`: raw zsh code added at the end of the generated file.                                        |
 | `[nu]`      | `init = '''...'''`: raw nushell code added at the end of the generated file.                                    |
 | `[sh]`      | `init = '''...'''`: raw code for every sh-family shell (currently zsh), combined with `[zsh] init` in file order. |
+| `[tool.X]`  | Any of the above that apply only where a tool is installed; see [Conditional entries](#conditional-entries).    |
 
 **Values in `[env]` and `[path]`** can use:
 
@@ -105,6 +106,53 @@ Aliases are where the two shells differ most. Commands such as `git status` or
 `$(...)`) don't, so give those aliases a per-shell form. Anything more
 elaborate, such as functions, prompts, completions, `setopt` or `$env.config`,
 goes in the `init` blocks.
+
+### Conditional entries
+
+A `[tool.X]` table holds `env`, `path`, `aliases` and `init` entries that apply
+only if a condition holds:
+
+```toml
+# Only where `eza` is on PATH and can run.
+[tool.eza.aliases]
+ls = "eza --long --header --group-directories-first"
+l  = "ls"
+
+# A command at a fixed location: the file must exist and be executable.
+[tool.borg]
+command = "/mnt/Private/bin/borg"
+env.TMPDIR = "/mnt/Private/borg-tmp"
+aliases.borg = "/mnt/Private/bin/borg"
+
+# A file or directory must exist.
+[tool.android-sdk]
+exists = "~/Library/Android/sdk/platform-tools"
+path.append = ["~/Library/Android/sdk/platform-tools"]
+
+[tool.thefuck]
+zsh.init = 'eval "$(thefuck --alias)"'
+```
+
+* `command = "name"`: a command with this name is on PATH and can run.
+* `command = "/a/path"` (or `~/...`): that file exists and is executable.
+* `exists = "path"`: a file or directory exists there.
+* Without `command` or `exists`, the table's name is the command to look for.
+* Both keys can take a list; then every entry must hold. Paths can use `~` and
+  `$NAME` as in `[env]`.
+
+The unconditional entries come first in the generated file, then each
+`[tool]` table in the order of the config file, then the unconditional `init`
+code. A tool's alias therefore overrides an unconditional one of the same name,
+and a check sees PATH as set up by `[path]` and by earlier tools that applied,
+but not by its own `path` entries. To make a directory's commands depend on the
+directory, use `exists`.
+
+**When conditions are checked.** zsh checks them each time a shell starts,
+using builtins only. nushell can't: it defines aliases while it parses its
+config, before anything runs. So for nushell, shellsync checks the conditions
+when it builds the files, and the generated file notes each tool it skipped.
+After installing or removing a tool, run `shellsync build` so nushell picks up
+the change; zsh needs nothing.
 
 ## Commands
 

@@ -6,6 +6,7 @@ use std::process::Command;
 
 use super::{Dialect, Shell, home_relative};
 use crate::Paths;
+use crate::config::Condition;
 use crate::template::{self, Seg};
 
 pub struct Nu;
@@ -34,6 +35,12 @@ impl Dialect for Nu {
 
     fn alias(name: &str, body: &str) -> String {
         format!("alias {name} = {}\n", body.trim())
+    }
+
+    /// nushell defines aliases while parsing, so an alias inside a runtime
+    /// `if` would only exist in that block.
+    fn guard(_: &[Condition]) -> Option<(String, String)> {
+        None
     }
 }
 
@@ -188,6 +195,63 @@ mod tests {
             ]
             .join("\n")
         );
+    }
+
+    /// Conditions are checked at build time, against PATH as built up by
+    /// the config so far: the base [path], then each applied tool's entries.
+    #[test]
+    fn checks_tools_when_built() {
+        use crate::probe::{Probe, fixture};
+        use crate::shell::render_body_with;
+        use std::fs;
+
+        let dir = fixture("nu-tools");
+        fs::create_dir(dir.join("sub")).unwrap();
+        fs::copy(dir.join("tool"), dir.join("sub/inner")).unwrap();
+        let d = dir.display().to_string();
+        let probe = Probe::with_vars(&[("D", &d)]);
+        let cfg = r#"
+            [path]
+            prepend = ["$D"]
+            [tool.tool.aliases]
+            t = "tool"
+            [tool.missing.aliases]
+            m = "missing"
+            [tool.inner-too-early.aliases]
+            i = "inner"
+            [tool.sub]
+            exists = "$D/sub"
+            path.prepend = ["$D/sub"]
+            [tool.inner.aliases]
+            i = "inner"
+            [tool.data]
+            command = "$D/data"
+            aliases.d = "data"
+        "#;
+        let d_expr = "($env.D? | default '')";
+        assert_eq!(
+            render_body_with(cfg, Shell::Nu, &probe),
+            [
+                format!("$env.PATH = ($env.PATH | split row (char esep) | prepend [{d_expr}] | uniq)"),
+                String::new(),
+                "# tool: tool".into(),
+                "alias t = tool".into(),
+                String::new(),
+                "# tool: missing (skipped: `missing` not on PATH when this file was built)".into(),
+                String::new(),
+                "# tool: inner-too-early (skipped: `inner-too-early` not on PATH when this file was built)".into(),
+                String::new(),
+                "# tool: sub".into(),
+                format!("$env.PATH = ($env.PATH | split row (char esep) | prepend [([{d_expr} '/sub'] | str join)] | uniq)"),
+                String::new(),
+                "# tool: inner".into(),
+                "alias i = inner".into(),
+                String::new(),
+                "# tool: data (skipped: `$D/data` not executable when this file was built)".into(),
+            ]
+            .join("\n")
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
