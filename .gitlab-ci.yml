@@ -1,0 +1,87 @@
+stages:
+  - lint
+  - test
+
+# Branch pipelines, or merge request pipelines once an MR is open, never both.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+variables:
+  # Inside the project dir so it can be cached, and so the macOS shell runner
+  # doesn't share a cargo home with the user it runs as.
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo-home
+  CARGO_TERM_COLOR: always
+
+.rust:
+  image: rust:1.100.0-slim-trixie
+  cache:
+    key:
+      prefix: $CI_JOB_NAME
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo-home/registry/
+      - target/
+
+secrets:
+  stage: lint
+  image:
+    name: zricethezav/gitleaks:v8.30.1
+    entrypoint: [""]
+  variables:
+    # Scan the whole history, not just the shallow clone's tip.
+    GIT_DEPTH: "0"
+  script:
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - gitleaks git --redact --verbose .
+
+lint:
+  extends: .rust
+  stage: lint
+  script:
+    - rustup component add rustfmt clippy
+    - cargo fmt --check
+    - cargo clippy --locked --all-targets -- -D warnings
+
+test:linux:
+  extends: .rust
+  stage: test
+  variables:
+    NU_VERSION: "0.117.0"
+    NU_SHA256: 2b808786d44af41170a29f8b9a15b5113bb6ea5dda9221098eca932f8a149924
+    SHELLSYNC_REQUIRE_SHELLS: "1"
+    DEBIAN_FRONTEND: noninteractive
+  script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends ca-certificates curl zsh
+    - curl -fsSL -o nu.tar.gz "https://github.com/nushell/nushell/releases/download/${NU_VERSION}/nu-${NU_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+    - echo "${NU_SHA256}  nu.tar.gz" | sha256sum -c -
+    - tar -xzf nu.tar.gz -C /usr/local/bin --strip-components=1 "nu-${NU_VERSION}-x86_64-unknown-linux-musl/nu"
+    - cargo test --locked
+
+# Runs on the developer's Mac with the shells installed there (not pinned).
+test:macos:
+  stage: test
+  tags:
+    - macos
+  variables:
+    SHELLSYNC_REQUIRE_SHELLS: "1"
+  cache:
+    key:
+      prefix: $CI_JOB_NAME
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo-home/registry/
+      - target/
+  before_script:
+    - export PATH="/opt/homebrew/bin:$PATH"
+    - zsh --version
+    - nu --version
+  script:
+    - cargo test --locked

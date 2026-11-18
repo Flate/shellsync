@@ -13,10 +13,14 @@ cargo test splice                           # one test, by name substring
 cargo test --test shells nu_end_to_end      # one end-to-end test
 cargo test --bins                           # unit tests only (no real shells)
 SHELLSYNC_REQUIRE_SHELLS=1 cargo test       # a missing shell fails instead of skipping (CI sets this)
+cargo clippy --locked --all-targets -- -D warnings   # as in CI, together with `cargo fmt --check`
 cargo run -- print zsh --config examples/config.toml   # inspect generated output
+GITLAB_HOST=git.flatenet.de glab ci lint .gitlab-ci.yml   # validate CI changes before pushing
 ```
 
 The end-to-end tests in `tests/shells.rs` run `shellsync install` into a throwaway `HOME` under the temp dir, then start real `zsh -i` / `nu` processes and check the resulting env, PATH and aliases. Without `SHELLSYNC_REQUIRE_SHELLS`, a test skips (prints a note) if its shell isn't installed. nushell's config location differs per platform (`~/Library/Application Support/nushell` on macOS without `XDG_CONFIG_HOME`), so tests ask `nu` for it instead of hard-coding a path.
+
+CI (`.gitlab-ci.yml`, remote is a self-hosted GitLab at `git.flatenet.de`): `secrets` (gitleaks) and `lint` first, then `test:linux` (Docker, pinned Rust image, Debian zsh, nushell release tarball pinned by version and SHA-256) and `test:macos` (shell executor on the developer's Mac, tag `macos`, uses whatever Homebrew has installed). Image tags are pinned to explicit versions.
 
 Project state lives in `STATUS.md`; user-facing changes go into `CHANGELOG.md` under `[Unreleased]`.
 

@@ -124,3 +124,7 @@ cargo test     # unit tests, plus end-to-end tests that start real zsh / nu
                # in a temporary HOME (skipped if a shell isn't installed)
 SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 ```
+
+GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
+`cargo clippy`, then the tests on Linux (zsh and a pinned nushell) and on a
+macOS runner tagged `macos`.
