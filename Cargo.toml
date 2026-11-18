@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 description = "Configure zsh and nushell from one TOML file"
 repository = "https://git.flatenet.de/flate/shellsync"
+license = "GPL-3.0-or-later"
 publish = false
 
 [dependencies]

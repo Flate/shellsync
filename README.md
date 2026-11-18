@@ -129,3 +129,8 @@ SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
 `cargo clippy`, then the tests on Linux (zsh and a pinned nushell) and on a
 macOS runner tagged `macos`.
+
+## License
+
+shellsync is licensed under the GNU General Public License v3.0 or later.
+See [LICENSE](LICENSE).
