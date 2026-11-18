@@ -9,7 +9,7 @@
 
 ## In progress
 
-Improvement plan, steps 1–5 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness).
+Improvement plan, steps 1–6 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key).
 
 ## Known issues
 
@@ -17,11 +17,10 @@ Improvement plan, steps 1–5 of 13 done (housekeeping, test fix, CI, file permi
 
 ## Next steps
 
-1. Refactor for more than two shells; per-shell values with an `sh` key (zsh + bash)
-2. Conditional entries as `[tool.X]` tables (`command`, `exists`); `hook --exe`; `.zshenv`/`.zshrc` split
-3. Release builds on `v*` tags (Linux x86_64, macOS arm64, Windows x86_64)
-4. `check` validates the output with each shell's parser
-5. PowerShell 7 (not Windows PowerShell), Windows, bash
+1. Conditional entries as `[tool.X]` tables (`command`, `exists`); `hook --exe`; `.zshenv`/`.zshrc` split
+2. Release builds on `v*` tags (Linux x86_64, macOS arm64, Windows x86_64)
+3. `check` validates the output with each shell's parser
+4. PowerShell 7 (not Windows PowerShell), Windows, bash
 
 ## Constraints
 
