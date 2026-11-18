@@ -14,7 +14,7 @@ cargo test --test shells nu_end_to_end      # one end-to-end test
 cargo test --bins                           # unit tests only (no real shells)
 SHELLSYNC_REQUIRE_SHELLS=1 cargo test       # a missing shell fails instead of skipping (CI sets this)
 cargo clippy --locked --all-targets -- -D warnings   # as in CI, together with `cargo fmt --check`
-cargo run -- print zsh --config examples/config.toml   # inspect generated output
+cargo run -- print zsh --config examples/example.toml   # inspect generated output
 GITLAB_HOST=git.flatenet.de glab ci lint .gitlab-ci.yml   # validate CI changes before pushing
 ```
 
@@ -47,6 +47,6 @@ Key invariants that span the Rust code and the generated shell hooks:
 - **Hooks are portable:** paths under `$HOME` are written as `~/...` (nu) or `"${HOME}/..."` (zsh) via each shell module's path quoting and `shell::home_relative`, so synced dotfiles work on machines with a different home path. `HookFile::block()` takes the binary path and home directory as parameters, so unit tests can pin its exact output.
 - **Hook blocks** are delimited by `# >>> shellsync >>>` / `# <<< shellsync <<<`; `splice` replaces, appends or removes the block and must stay idempotent (covered by `install_is_idempotent_and_uninstall_restores`). A start marker without an end marker is an error, never a guess.
 
-`examples/config.toml` is embedded with `include_str!` and written as the starter config by `install`/`edit`, so edits to it change what new users get.
+`examples/example.toml` is embedded with `include_str!` and written as the starter config by `install`/`edit`, so edits to it change what new users get.
 
 The only dependency is `toml` (with `preserve_order`, which the parser relies on for key order).

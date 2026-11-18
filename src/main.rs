@@ -37,7 +37,7 @@ Options:
   --if-stale        (build) Only rebuild if the config changed
 ";
 
-const EXAMPLE_CONFIG: &str = include_str!("../examples/config.toml");
+const EXAMPLE_CONFIG: &str = include_str!("../examples/example.toml");
 
 type Result<T = ()> = std::result::Result<T, String>;
 
