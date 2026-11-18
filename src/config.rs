@@ -12,19 +12,53 @@ use toml::{Table, Value as Toml};
 
 use crate::shell::Shell;
 
+/// What a per-shell key selects: one shell, or with `sh` every shell of the
+/// sh family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Target {
+    Sh,
+    Shell(Shell),
+}
+
+impl Target {
+    fn named(key: &str) -> Option<Target> {
+        match key {
+            "sh" => Some(Target::Sh),
+            _ => Shell::named(key).map(Target::Shell),
+        }
+    }
+
+    fn names() -> Vec<&'static str> {
+        let mut names = vec!["sh"];
+        names.extend(Shell::ALL.map(Shell::name));
+        names
+    }
+
+    fn covers(self, shell: Shell) -> bool {
+        match self {
+            Target::Sh => shell.is_sh(),
+            Target::Shell(s) => s == shell,
+        }
+    }
+}
+
 /// A value that is either shared by all shells or given separately per shell.
-/// A per-shell value is skipped in the shells it doesn't list.
+/// A per-shell value is skipped in the shells it doesn't cover; a shell's own
+/// key takes precedence over `sh`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     All(String),
-    PerShell(BTreeMap<Shell, String>),
+    PerShell(BTreeMap<Target, String>),
 }
 
 impl Value {
     pub fn get(&self, shell: Shell) -> Option<&str> {
         match self {
             Value::All(s) => Some(s),
-            Value::PerShell(by_shell) => by_shell.get(&shell).map(String::as_str),
+            Value::PerShell(by_target) => by_target
+                .get(&Target::Shell(shell))
+                .or_else(|| by_target.get(&Target::Sh).filter(|_| shell.is_sh()))
+                .map(String::as_str),
         }
     }
 }
@@ -35,8 +69,20 @@ pub struct Config {
     pub path_prepend: Vec<Value>,
     pub path_append: Vec<Value>,
     pub aliases: Vec<(String, Value)>,
-    /// Raw code from each shell's `init`.
-    pub init: BTreeMap<Shell, String>,
+    /// Raw code from the `init` of each `[sh]`/`[<shell>]` section, in file order.
+    pub init_blocks: Vec<(Target, String)>,
+}
+
+impl Config {
+    /// The init code for `shell`: every block that covers it, in file order.
+    pub fn init(&self, shell: Shell) -> String {
+        self.init_blocks
+            .iter()
+            .filter(|(target, code)| target.covers(shell) && !code.trim().is_empty())
+            .map(|(_, code)| code.trim_matches('\n'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 #[derive(Debug)]
@@ -109,9 +155,9 @@ impl Config {
                     }
                 }
                 _ => {
-                    let Some(shell) = Shell::named(key) else {
+                    let Some(target) = Target::named(key) else {
                         let mut sections = vec!["env", "path", "aliases"];
-                        sections.extend(Shell::ALL.map(Shell::name));
+                        sections.extend(Target::names());
                         return err(format!(
                             "unknown section `{key}` (expected {})",
                             one_of(&sections)
@@ -125,7 +171,7 @@ impl Config {
                         let Toml::String(s) = v else {
                             return err(format!("{ctx}: expected a string of {key} code"));
                         };
-                        cfg.init.insert(shell, s.clone());
+                        cfg.init_blocks.push((target, s.clone()));
                     }
                 }
             }
@@ -156,16 +202,17 @@ fn value(v: &Toml, ctx: &str, allow_scalars: bool) -> Result<Value, Error> {
     };
     match v {
         Toml::Table(t) => {
-            let mut by_shell = BTreeMap::new();
+            let mut by_target = BTreeMap::new();
             for (k, v) in t {
                 let sub = format!("{ctx}.{k}");
-                let Some(shell) = Shell::named(k) else {
-                    let names = Shell::ALL.map(|s| format!("`{}`", s.name()));
+                let Some(target) = Target::named(k) else {
+                    let names: Vec<String> =
+                        Target::names().iter().map(|n| format!("`{n}`")).collect();
                     return err(format!("{sub}: unknown key (expected {})", one_of(&names)));
                 };
-                by_shell.insert(shell, scalar(v, &sub)?);
+                by_target.insert(target, scalar(v, &sub)?);
             }
-            Ok(Value::PerShell(by_shell))
+            Ok(Value::PerShell(by_target))
         }
         other => Ok(Value::All(scalar(other, ctx)?)),
     }
@@ -232,18 +279,60 @@ mod tests {
         assert_eq!(cfg.path_prepend[1].get(Shell::Nu), None);
         assert_eq!(cfg.path_append.len(), 1);
         assert_eq!(cfg.aliases[1].1.get(Shell::Zsh), Some("ls -lh"));
-        assert_eq!(cfg.init[&Shell::Zsh], "setopt autocd");
-        assert_eq!(cfg.init[&Shell::Nu], "$env.config.show_banner = false");
+        assert_eq!(cfg.init(Shell::Zsh), "setopt autocd");
+        assert_eq!(cfg.init(Shell::Nu), "$env.config.show_banner = false");
+    }
+
+    #[test]
+    fn sh_covers_the_sh_family_and_yields_to_a_shell_key() {
+        let cfg = Config::parse(
+            r#"
+            [aliases]
+            a = { sh = "for sh", nu = "for nu" }
+            b = { sh = "for sh", zsh = "for zsh" }
+            c = { sh = "for sh" }
+            "#,
+        )
+        .unwrap();
+        let get = |i: usize, shell| cfg.aliases[i].1.get(shell);
+        assert_eq!(get(0, Shell::Zsh), Some("for sh"));
+        assert_eq!(get(0, Shell::Nu), Some("for nu"));
+        assert_eq!(get(1, Shell::Zsh), Some("for zsh"));
+        assert_eq!(get(2, Shell::Nu), None);
+    }
+
+    #[test]
+    fn init_blocks_add_up_in_file_order() {
+        let cfg = Config::parse(
+            r#"
+            [zsh]
+            init = "zsh first"
+            [nu]
+            init = "nu only"
+            [sh]
+            init = "\nshared\n"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.init(Shell::Zsh), "zsh first\nshared");
+        assert_eq!(cfg.init(Shell::Nu), "nu only");
     }
 
     #[test]
     fn reports_the_offending_key() {
         let e = |s: &str| Config::parse(s).unwrap_err().0;
         assert!(e("[env]\n\"BAD-NAME\" = 'x'").starts_with("env.BAD-NAME"));
-        assert!(e("[env]\nX = { fish = 'x' }").starts_with("env.X.fish"));
+        assert_eq!(
+            e("[env]\nX = { fish = 'x' }"),
+            "env.X.fish: unknown key (expected `sh`, `zsh` or `nu`)"
+        );
+        assert!(e("[aliases]\nx = { sh = ' ' }").contains("empty"));
         assert!(e("[path]\nprepend = [1]").starts_with("path.prepend[0]"));
         assert!(e("[aliases]\nx = ''").contains("empty"));
-        assert!(e("[bogus]").contains("unknown section"));
+        assert_eq!(
+            e("[bogus]"),
+            "unknown section `bogus` (expected env, path, aliases, sh, zsh or nu)"
+        );
         assert!(e("[env\n").contains("line 1"));
     }
 }

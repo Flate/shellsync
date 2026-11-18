@@ -14,6 +14,7 @@ const CONFIG: &str = r#"
 GOPATH = "~/go"
 TRICKY = "it's \"q\" $$x `y` (z) {w}"
 ONLY_ZSH = { zsh = "z" }
+FOR_SH = { sh = "s" }
 
 [path]
 prepend = ["$GOPATH/bin", "/usr/bin"]
@@ -103,7 +104,7 @@ fn zsh_end_to_end() {
     }
     let home = setup();
     let mut c = cmd("zsh", &home);
-    c.args(["-i", "-c", r#"print -r -- $GOPATH; print -r -- $TRICKY; print -r -- $ONLY_ZSH; print -r -- $PATH; alias greet; alias ll"#]);
+    c.args(["-i", "-c", r#"print -r -- $GOPATH; print -r -- $TRICKY; print -r -- $ONLY_ZSH; print -r -- $PATH; alias greet; alias ll; print -r -- $FOR_SH"#]);
     let out = run(c);
     let lines: Vec<&str> = out.lines().collect();
     let h = home.display();
@@ -123,6 +124,7 @@ fn zsh_end_to_end() {
     );
     assert_eq!(lines[4], "greet='echo hello'");
     assert_eq!(lines[5], "ll='ls -lh'");
+    assert_eq!(lines[6], "s");
 }
 
 #[test]
@@ -140,7 +142,7 @@ fn nu_end_to_end() {
         .arg(config_nu)
         .args([
             "-c",
-            r#"print $env.GOPATH; print $env.TRICKY; print ($env.ONLY_ZSH? | default 'unset'); print ($env.PATH | str join ':'); print (scope aliases | where name in [greet ll] | sort-by name | get expansion | str join ';')"#,
+            r#"print $env.GOPATH; print $env.TRICKY; print ($env.ONLY_ZSH? | default 'unset'); print ($env.PATH | str join ':'); print (scope aliases | where name in [greet ll] | sort-by name | get expansion | str join ';'); print ($env.FOR_SH? | default 'unset')"#,
         ]);
     let out = run(c);
     let lines: Vec<&str> = out.lines().collect();
@@ -155,6 +157,7 @@ fn nu_end_to_end() {
     );
     assert!(lines[3].ends_with(":/opt/shellsync-test"), "{}", lines[3]);
     assert_eq!(lines[4], "echo hello;ls -l");
+    assert_eq!(lines[5], "unset");
 }
 
 /// Runs `code` in the given shell with the installed hooks and returns

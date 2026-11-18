@@ -189,4 +189,17 @@ mod tests {
             .join("\n")
         );
     }
+
+    #[test]
+    fn ignores_sh_entries() {
+        let cfg = r#"
+            [env]
+            PAGER = { sh = "less" }
+            [aliases]
+            ll = { sh = "ls -lh", nu = "ls -l" }
+            [sh]
+            init = "setopt autocd"
+        "#;
+        assert_eq!(render_body(cfg, Shell::Nu), "alias ll = ls -l");
+    }
 }

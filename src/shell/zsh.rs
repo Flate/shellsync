@@ -142,4 +142,30 @@ mod tests {
             .join("\n")
         );
     }
+
+    #[test]
+    fn renders_sh_entries() {
+        let cfg = r#"
+            [env]
+            PAGER = { sh = "less", nu = "bat" }
+            [aliases]
+            ll = { sh = "ls -l", zsh = "ls -lh" }
+            [sh]
+            init = "shared"
+            [zsh]
+            init = "zsh only"
+        "#;
+        assert_eq!(
+            render_body(cfg, Shell::Zsh),
+            [
+                r#"export PAGER="less""#,
+                "alias -- ll='ls -lh'",
+                "",
+                "# --- init ---",
+                "shared",
+                "zsh only",
+            ]
+            .join("\n")
+        );
+    }
 }

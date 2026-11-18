@@ -73,6 +73,7 @@ if it exists.
 | `[aliases]` | `name = "command"`. The body is shell code and is used exactly as written.                                     |
 | `[zsh]`     | `init = '''...'''`: raw zsh code added at the end of the generated file.                                        |
 | `[nu]`      | `init = '''...'''`: raw nushell code added at the end of the generated file.                                    |
+| `[sh]`      | `init = '''...'''`: raw code for every sh-family shell (currently zsh), combined with `[zsh] init` in file order. |
 
 **Values in `[env]` and `[path]`** can use:
 
@@ -87,7 +88,17 @@ special characters are escaped for each shell.
 
 **Per-shell values.** Any value can be a table: `{ zsh = "...", nu = "..." }`.
 If you leave out a shell, that entry is skipped there. For example,
-`ZSH_AUTOSUGGEST_STRATEGY = { zsh = "history" }` is set only in zsh.
+`ZSH_AUTOSUGGEST_STRATEGY = { zsh = "history" }` is set only in zsh. The key
+`sh` stands for every shell with POSIX sh syntax (currently zsh); a shell's own
+key takes precedence, so `{ sh = "ls -l", zsh = "ls -lh" }` gives zsh
+`ls -lh`. TOML 1.1 allows such a table to span several lines:
+
+```toml
+ll = {
+  sh = "ls -lh",
+  nu = "ls -l",
+}
+```
 
 Aliases are where the two shells differ most. Commands such as `git status` or
 `nvim` work the same in both, but builtins (`ls`, `cd`) and shell syntax (`&&`,

@@ -25,6 +25,12 @@ impl Shell {
         }
     }
 
+    /// Whether the shell shares POSIX sh syntax, so the `sh` config key
+    /// applies to it.
+    pub fn is_sh(self) -> bool {
+        matches!(self, Shell::Zsh)
+    }
+
     /// The shell with this config name.
     pub fn named(name: &str) -> Option<Shell> {
         Shell::ALL.into_iter().find(|s| s.name() == name)
@@ -76,9 +82,10 @@ fn render_with<D: Dialect>(cfg: &Config, shell: Shell, source: &str) -> String {
             out.push_str(&D::alias(name, body));
         }
     }
-    if let Some(code) = cfg.init.get(&shell).filter(|c| !c.trim().is_empty()) {
+    let code = cfg.init(shell);
+    if !code.is_empty() {
         out.push_str("\n# --- init ---\n");
-        out.push_str(code.trim_matches('\n'));
+        out.push_str(&code);
         out.push('\n');
     }
     out
