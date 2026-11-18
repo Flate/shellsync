@@ -3,11 +3,12 @@
 ## Works
 
 - zsh and nushell generation, hooks, install/uninstall, rebuild on config change
-- Tests pass on macOS (zsh 5.9, nu 0.117.0)
+- Tests pass on macOS (zsh 5.9, nu 0.117.0) and in the Linux CI image (zsh 5.9, nu 0.117.0)
+- GitLab CI pipeline defined and validated with `glab ci lint`; not yet run on GitLab
 
 ## In progress
 
-Improvement plan, steps 1–2 of 13 done (housekeeping, test fix).
+Improvement plan, steps 1–4 of 13 done (housekeeping, test fix, CI, file permissions).
 
 ## Known issues
 
@@ -18,8 +19,7 @@ Improvement plan, steps 1–2 of 13 done (housekeeping, test fix).
 
 ## Next steps
 
-1. GitLab CI pipeline; generated files readable only by the user
-2. Fix the known issues above, with unit tests for hook generation
+1. Fix the known issues above, with unit tests for hook generation
 2. Refactor for more than two shells; per-shell values with an `sh` key (zsh + bash)
 3. Conditional entries as `[tool.X]` tables (`command`, `exists`); `hook --exe`; `.zshenv`/`.zshrc` split
 4. Release builds on `v*` tags (Linux x86_64, macOS arm64, Windows x86_64)
