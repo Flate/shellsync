@@ -122,4 +122,5 @@ hooks, so later changes to those variables don't affect existing hooks.
 ```sh
 cargo test     # unit tests, plus end-to-end tests that start real zsh / nu
                # in a temporary HOME (skipped if a shell isn't installed)
+SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 ```

@@ -1,5 +1,6 @@
 //! End-to-end tests: install into a throwaway HOME and start real shells.
-//! A test is skipped (with a note) when its shell is not installed.
+//! A test is skipped (with a note) when its shell is not installed, unless
+//! SHELLSYNC_REQUIRE_SHELLS is set (as in CI), where a missing shell fails.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,11 +25,32 @@ ll = { zsh = "ls -lh", nu = "ls -l" }
 "#;
 
 fn has(shell: &str) -> bool {
-    Command::new(shell)
+    let found = Command::new(shell)
         .arg("-c")
         .arg("exit 0")
         .output()
-        .is_ok_and(|o| o.status.success())
+        .is_ok_and(|o| o.status.success());
+    if !found && std::env::var_os("SHELLSYNC_REQUIRE_SHELLS").is_some() {
+        panic!("{shell} not installed, but SHELLSYNC_REQUIRE_SHELLS is set");
+    }
+    found
+}
+
+/// nushell's env.nu and config.nu for `home`, as nushell itself reports them.
+/// They differ by platform (e.g. ~/Library/Application Support on macOS).
+fn nu_config_files(home: &Path) -> (PathBuf, PathBuf) {
+    let mut c = cmd("nu", home);
+    c.args([
+        "-n",
+        "-c",
+        "[$nu.env-path $nu.config-path] | str join (char nl)",
+    ]);
+    let out = run(c);
+    let mut lines = out.lines();
+    (
+        PathBuf::from(lines.next().unwrap()),
+        PathBuf::from(lines.next().unwrap()),
+    )
 }
 
 /// A fresh fake HOME with shellsync installed and CONFIG in place.
@@ -104,12 +126,12 @@ fn nu_end_to_end() {
         return;
     }
     let home = setup();
-    let cfg_dir = home.join(".config/nushell");
+    let (env_nu, config_nu) = nu_config_files(&home);
     let mut c = cmd("nu", &home);
     c.arg("--env-config")
-        .arg(cfg_dir.join("env.nu"))
+        .arg(env_nu)
         .arg("--config")
-        .arg(cfg_dir.join("config.nu"))
+        .arg(config_nu)
         .args([
             "-c",
             r#"print $env.GOPATH; print $env.TRICKY; print ($env.ONLY_ZSH? | default 'unset'); print ($env.PATH | str join ':'); print (scope aliases | where name in [greet ll] | sort-by name | get expansion | str join ';')"#,
@@ -134,9 +156,9 @@ fn nu_end_to_end() {
 fn shell(shell: &str, home: &Path, code: &str) -> (String, String) {
     let mut c = cmd(shell, home);
     if shell == "nu" {
-        let dir = home.join(".config/nushell");
-        c.arg("--env-config").arg(dir.join("env.nu"));
-        c.arg("--config").arg(dir.join("config.nu"));
+        let (env_nu, config_nu) = nu_config_files(home);
+        c.arg("--env-config").arg(env_nu);
+        c.arg("--config").arg(config_nu);
         c.args(["-c", code]);
     } else {
         c.args(["-i", "-c", code]);
