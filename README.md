@@ -53,12 +53,16 @@ in those files as it was.
   config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
   prints the error with its line number and keeps using the last good build.
+  If the shellsync binary is missing, for example because your dotfiles were
+  synced to a machine without it, shells start normally without the
+  generated settings.
 * **Writes are atomic,** so a shell that starts during a rebuild never reads a
   half-written file.
 
 nushell parses `config.nu` completely before running it, so the file it
 `source`s has to exist beforehand. That's why the rebuild check lives in
-`env.nu`, which nushell runs first.
+`env.nu`, which nushell runs first, and why `config.nu` only sources the file
+if it exists.
 
 ## Config reference
 
@@ -115,8 +119,8 @@ hooks, so later changes to those variables don't affect existing hooks.
 * zsh loads the generated file from `.zshrc`, which only interactive shells read.
   To make variables visible to scripts started by cron or other non-interactive
   zsh sessions, set them in `~/.zshenv` as well.
-* After upgrading shellsync, run `shellsync build` once to regenerate the files
-  with the new version.
+* After upgrading shellsync, run `shellsync install` once. It regenerates the
+  files and updates the hooks if the new version changed them.
 
 ## Development
 

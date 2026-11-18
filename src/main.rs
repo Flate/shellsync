@@ -148,7 +148,7 @@ fn run(args: Vec<String>) -> Result {
                 .get(1)
                 .ok_or("expected zsh, nu-env or nu-config")?;
             let kind = HookFile::parse(which).ok_or_else(|| format!("unknown hook `{which}`"))?;
-            print!("{}", hook(kind, &paths)?);
+            print!("{}", hook(kind, &paths, &this_exe()?, &home()));
             Ok(())
         }
         Some("install") => install(&paths),
@@ -234,7 +234,8 @@ fn private_file(path: &Path) -> io::Result<fs::File> {
 ///
 /// On a config error the previous outputs are left untouched (so shells keep
 /// working with the last good config); if there are none yet, placeholders
-/// are written so that nushell's `source` line still parses.
+/// are written so that the nushell `source` line of hooks installed by
+/// earlier versions, which needs the file to exist, still parses.
 fn build(paths: &Paths, if_stale: bool) -> Result<bool> {
     if if_stale && !is_stale(paths) {
         return Ok(false);
@@ -354,31 +355,33 @@ impl HookFile {
 /// The snippet added to each shell's startup file. The fast path (config
 /// unchanged) spawns no process: zsh compares mtimes with `-nt`, nushell with
 /// its builtin `ls`; see `is_stale` for the rule. The binary is called by its
-/// full path so the hook works before PATH is set up, and paths inside $HOME
-/// are written relative to it so the hooks survive in synced dotfiles.
-fn hook(kind: HookFile, paths: &Paths) -> Result<String> {
-    let exe = env::current_exe().map_err(|e| format!("locating the shellsync binary: {e}"))?;
+/// full path so the hook works before PATH is set up, and paths inside `home`
+/// are written relative to it so the hooks survive in synced dotfiles. Synced
+/// dotfiles can also reach a machine without the binary, so a missing binary
+/// or output is skipped silently.
+fn hook(kind: HookFile, paths: &Paths, exe: &Path, home: &Path) -> String {
     let body = match kind {
         HookFile::Zshrc => {
             // The check runs in an anonymous function so its locals don't leak;
             // `source` runs at top level so the generated code isn't function-scoped.
-            let q = zsh_path;
+            let q = |p: &Path| zsh_path(p, home);
             let out = q(&paths.output(Shell::Zsh));
             format!(
                 "() {{\n  \
                  local exe={exe} cfg={cfg} out={out}\n  \
-                 if [[ ! -e $out || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ]]; then\n    \
+                 if [[ -x $exe && ( ! -e $out || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
                  $exe build --config $cfg --out-dir {dir}\n  \
                  fi\n\
                  }}\n\
                  [[ -r {out} ]] && source {out}\n",
-                exe = q(&exe),
+                exe = q(exe),
                 cfg = q(&paths.config),
                 dir = q(&paths.out_dir),
             )
         }
         HookFile::NuEnv => {
-            let q = nu_path;
+            // `try` also covers a missing binary.
+            let q = |p: &Path| nu_path(p, home);
             format!(
                 "do {{\n  \
                  let exe = ({exe} | path expand)\n  \
@@ -388,33 +391,40 @@ fn hook(kind: HookFile, paths: &Paths) -> Result<String> {
                  try {{ ^$exe build --config $cfg --out-dir ({dir} | path expand) }}\n  \
                  }}\n\
                  }}\n",
-                exe = q(&exe),
+                exe = q(exe),
                 cfg = q(&paths.config),
                 out = q(&paths.output(Shell::Nu)),
                 dir = q(&paths.out_dir),
             )
         }
-        // `source` needs a path known at parse time, and expands `~` itself.
-        HookFile::NuConfig => format!("source {}\n", nu_path(&paths.output(Shell::Nu))),
+        // `source` resolves its path at parse time, so the existence check has
+        // to be a constant expression; `source null` does nothing.
+        HookFile::NuConfig => {
+            let out = nu_path(&paths.output(Shell::Nu), home);
+            format!("source (if ({out} | path exists) {{ {out} }} else {{ null }})\n")
+        }
     };
-    Ok(format!("{BEGIN}\n{body}{END}\n"))
+    format!("{BEGIN}\n{body}{END}\n")
 }
 
-fn home_relative(p: &Path) -> Option<String> {
-    let home = home();
-    let rel = p.strip_prefix(&home).ok()?.to_str()?;
+fn this_exe() -> Result<PathBuf> {
+    env::current_exe().map_err(|e| format!("locating the shellsync binary: {e}"))
+}
+
+fn home_relative(p: &Path, home: &Path) -> Option<String> {
+    let rel = p.strip_prefix(home).ok()?.to_str()?;
     (home != Path::new("/") && !rel.is_empty()).then(|| rel.to_string())
 }
 
-fn nu_path(p: &Path) -> String {
-    match home_relative(p) {
+fn nu_path(p: &Path, home: &Path) -> String {
+    match home_relative(p, home) {
         Some(rel) => render::nu_quote(&format!("~/{rel}")),
         None => render::nu_quote(&p.display().to_string()),
     }
 }
 
-fn zsh_path(p: &Path) -> String {
-    match home_relative(p) {
+fn zsh_path(p: &Path, home: &Path) -> String {
+    match home_relative(p, home) {
         Some(rel) => render::zsh_template(&format!("~/{}", rel.replace('$', "$$"))),
         None => render::zsh_quote(&p.display().to_string()),
     }
@@ -519,8 +529,9 @@ fn install(paths: &Paths) -> Result {
     }
     build(paths, false)?;
     writeln!(stdout, "built    {}", paths.out_dir.display()).ok();
+    let exe = this_exe()?;
     for (kind, file) in hook_files() {
-        let changed = update_file(&file, &hook(kind, paths)?)?;
+        let changed = update_file(&file, &hook(kind, paths, &exe, &home()))?;
         let verb = if changed { "hooked" } else { "ok" };
         writeln!(stdout, "{verb:<8} {}", file.display()).ok();
     }
@@ -557,6 +568,75 @@ mod tests {
         assert_eq!(splice(&installed, ""), "top\nbottom\n");
         assert_eq!(splice(&splice("a\n", &block), ""), "a\n");
         assert_eq!(splice("untouched\n", ""), "untouched\n");
+    }
+
+    fn paths_under(home: &str) -> Paths {
+        Paths {
+            config: PathBuf::from(format!("{home}/.config/shellsync/config.toml")),
+            out_dir: PathBuf::from(format!("{home}/.cache/shellsync")),
+        }
+    }
+
+    #[test]
+    fn hooks_write_paths_relative_to_home() {
+        let home = Path::new("/home/me");
+        let paths = paths_under("/home/me");
+        let exe = Path::new("/home/me/.cargo/bin/shellsync");
+        assert_eq!(
+            hook(HookFile::Zshrc, &paths, exe, home),
+            format!(
+                "{BEGIN}\n\
+                 () {{\n  \
+                 local exe=\"${{HOME}}/.cargo/bin/shellsync\" cfg=\"${{HOME}}/.config/shellsync/config.toml\" out=\"${{HOME}}/.cache/shellsync/init.zsh\"\n  \
+                 if [[ -x $exe && ( ! -e $out || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
+                 $exe build --config $cfg --out-dir \"${{HOME}}/.cache/shellsync\"\n  \
+                 fi\n\
+                 }}\n\
+                 [[ -r \"${{HOME}}/.cache/shellsync/init.zsh\" ]] && source \"${{HOME}}/.cache/shellsync/init.zsh\"\n\
+                 {END}\n"
+            )
+        );
+        let nu_env = hook(HookFile::NuEnv, &paths, exe, home);
+        assert!(nu_env.contains("let exe = ('~/.cargo/bin/shellsync' | path expand)"));
+        assert!(nu_env.contains("try { ^$exe build"));
+        assert_eq!(
+            hook(HookFile::NuConfig, &paths, exe, home),
+            format!(
+                "{BEGIN}\n\
+                 source (if ('~/.cache/shellsync/init.nu' | path exists) {{ '~/.cache/shellsync/init.nu' }} else {{ null }})\n\
+                 {END}\n"
+            )
+        );
+    }
+
+    #[test]
+    fn hooks_keep_paths_outside_home_absolute() {
+        let paths = paths_under("/home/me");
+        let exe = Path::new("/opt/homebrew/bin/shellsync");
+        let zsh = hook(HookFile::Zshrc, &paths, exe, Path::new("/home/me"));
+        assert!(
+            zsh.contains("local exe='/opt/homebrew/bin/shellsync' "),
+            "{zsh}"
+        );
+        let nu = hook(HookFile::NuEnv, &paths, exe, Path::new("/home/me"));
+        assert!(nu.contains("let exe = ('/opt/homebrew/bin/shellsync' | path expand)"));
+
+        // With HOME=/ every path is "under home"; keep them absolute.
+        let zsh = hook(HookFile::Zshrc, &paths, exe, Path::new("/"));
+        assert!(
+            zsh.contains("cfg='/home/me/.config/shellsync/config.toml'"),
+            "{zsh}"
+        );
+    }
+
+    #[test]
+    fn hook_paths_are_quoted_for_each_shell() {
+        let home = Path::new("/home/me");
+        let odd = Path::new("/home/me/it's $x/bin");
+        assert_eq!(zsh_path(odd, home), r#""${HOME}/it's \$x/bin""#);
+        assert_eq!(nu_path(odd, home), "r#'~/it's $x/bin'#");
+        let outside = Path::new("/opt/it's");
+        assert_eq!(zsh_path(outside, home), r"'/opt/it'\''s'");
     }
 
     #[cfg(unix)]

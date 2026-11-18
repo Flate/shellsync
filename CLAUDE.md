@@ -37,10 +37,11 @@ Key invariants in `main.rs` that span the Rust code and the generated shell hook
 
 - **Staleness is mtime equality, not "newer".** `build` stamps each output with the config's mtime (taken *before* reading the config). `is_stale` in Rust, the zsh hook (`-nt` both ways) and the nu hook (`ls ... modified !=`) must all apply the same rule. Change one, change all three.
 - **The fast path spawns no process.** Hooks compare timestamps with shell builtins and only call the binary when stale. Don't add work to the hooks that forks.
-- **Errors keep the last good build.** On a parse error, existing outputs are left untouched; if none exist, a placeholder is written so nushell's `source` line (which needs the file at parse time) still parses.
+- **Errors keep the last good build.** On a parse error, existing outputs are left untouched; if none exist, a placeholder is written (current hooks don't need it, but nushell hooks installed by older versions source the file unconditionally).
+- **Hooks must not break a shell when the binary is missing** (dotfiles synced to a machine without shellsync): the zsh hook checks `-x $exe`, the nu env hook wraps the build in `try`, and `config.nu` uses `source (if (… | path exists) {…} else { null })`, which nushell evaluates at parse time. Covered by `shells_start_quietly_without_the_binary`.
 - **Outputs are written atomically** (temp file + rename) **with mode 0600**, since the config may hold secrets. Hook edits to dotfiles are written in place instead, so symlinked dotfiles stay symlinks.
 - **nushell split:** the rebuild check lives in `env.nu` and `config.nu` only does `source`, because nushell parses `config.nu` completely before running it, so the sourced file must already exist; `env.nu` runs first and can build it.
-- **Hooks are portable:** paths under `$HOME` are written as `~/...` (nu) or `"${HOME}/..."` (zsh) via `nu_path`/`zsh_path`, so synced dotfiles work on machines with a different home path.
+- **Hooks are portable:** paths under `$HOME` are written as `~/...` (nu) or `"${HOME}/..."` (zsh) via `nu_path`/`zsh_path`, so synced dotfiles work on machines with a different home path. `hook()` takes the binary path and home directory as parameters, so unit tests can pin its exact output.
 - **Hook blocks** are delimited by `# >>> shellsync >>>` / `# <<< shellsync <<<`; `splice` replaces, appends or removes the block and must stay idempotent (covered by `install_is_idempotent_and_uninstall_restores`).
 
 `examples/config.toml` is embedded with `include_str!` and written as the starter config by `install`/`edit`, so edits to it change what new users get.

@@ -53,8 +53,8 @@ fn nu_config_files(home: &Path) -> (PathBuf, PathBuf) {
     )
 }
 
-/// A fresh fake HOME with shellsync installed and CONFIG in place.
-fn setup() -> PathBuf {
+/// A fresh, empty fake HOME.
+fn temp_home() -> PathBuf {
     static N: AtomicUsize = AtomicUsize::new(0);
     let home = std::env::temp_dir().join(format!(
         "shellsync-test-{}-{}",
@@ -63,6 +63,12 @@ fn setup() -> PathBuf {
     ));
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(&home).unwrap();
+    home
+}
+
+/// A fresh fake HOME with shellsync installed and CONFIG in place.
+fn setup() -> PathBuf {
+    let home = temp_home();
     let out = cmd(BIN, &home).arg("install").output().unwrap();
     assert!(
         out.status.success(),
@@ -199,6 +205,33 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
         fs::remove_dir_all(home.join(".cache/shellsync")).unwrap();
         let (out, err) = shell(sh, &home, "print started");
         assert_eq!(out, "started", "{sh}: {err}");
+    }
+}
+
+/// Synced dotfiles can carry the hooks to a machine where the binary is
+/// missing or has moved. Shells must still start, without error output.
+#[test]
+fn shells_start_quietly_without_the_binary() {
+    for sh in ["zsh", "nu"] {
+        if !has(sh) {
+            eprintln!("{sh} not installed, skipping");
+            continue;
+        }
+        let home = temp_home();
+        let exe = home.join("bin/shellsync");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::copy(BIN, &exe).unwrap();
+        run({
+            let mut c = cmd(exe.to_str().unwrap(), &home);
+            c.arg("install");
+            c
+        });
+        fs::remove_file(&exe).unwrap();
+        fs::remove_dir_all(home.join(".cache/shellsync")).unwrap();
+
+        let (out, err) = shell(sh, &home, "print started");
+        assert_eq!(out, "started", "{sh}: {err}");
+        assert_eq!(err, "", "{sh}");
     }
 }
 
