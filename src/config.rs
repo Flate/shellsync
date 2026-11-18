@@ -5,54 +5,26 @@
 //! order of keys in the file is preserved: an env var may refer to one defined
 //! above it.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use toml::{Table, Value as Toml};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Shell {
-    Zsh,
-    Nu,
-}
+use crate::shell::Shell;
 
-impl Shell {
-    pub const ALL: [Shell; 2] = [Shell::Zsh, Shell::Nu];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Shell::Zsh => "zsh",
-            Shell::Nu => "nu",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Shell> {
-        match s {
-            "zsh" => Some(Shell::Zsh),
-            "nu" | "nushell" => Some(Shell::Nu),
-            _ => None,
-        }
-    }
-}
-
-/// A value that is either shared by both shells or given separately per shell.
-/// A per-shell value with one side missing is skipped in that shell.
+/// A value that is either shared by all shells or given separately per shell.
+/// A per-shell value is skipped in the shells it doesn't list.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    Both(String),
-    PerShell {
-        zsh: Option<String>,
-        nu: Option<String>,
-    },
+    All(String),
+    PerShell(BTreeMap<Shell, String>),
 }
 
 impl Value {
     pub fn get(&self, shell: Shell) -> Option<&str> {
         match self {
-            Value::Both(s) => Some(s),
-            Value::PerShell { zsh, nu } => match shell {
-                Shell::Zsh => zsh.as_deref(),
-                Shell::Nu => nu.as_deref(),
-            },
+            Value::All(s) => Some(s),
+            Value::PerShell(by_shell) => by_shell.get(&shell).map(String::as_str),
         }
     }
 }
@@ -63,8 +35,8 @@ pub struct Config {
     pub path_prepend: Vec<Value>,
     pub path_append: Vec<Value>,
     pub aliases: Vec<(String, Value)>,
-    pub zsh_init: String,
-    pub nu_init: String,
+    /// Raw code from each shell's `init`.
+    pub init: BTreeMap<Shell, String>,
 }
 
 #[derive(Debug)]
@@ -127,7 +99,7 @@ impl Config {
                             return err(format!("{ctx}: invalid alias name"));
                         }
                         let v = value(v, &ctx, false)?;
-                        if [Shell::Zsh, Shell::Nu]
+                        if Shell::ALL
                             .iter()
                             .any(|s| v.get(*s).is_some_and(|b| b.trim().is_empty()))
                         {
@@ -136,7 +108,15 @@ impl Config {
                         cfg.aliases.push((name.to_string(), v));
                     }
                 }
-                "zsh" | "nu" => {
+                _ => {
+                    let Some(shell) = Shell::named(key) else {
+                        let mut sections = vec!["env", "path", "aliases"];
+                        sections.extend(Shell::ALL.map(Shell::name));
+                        return err(format!(
+                            "unknown section `{key}` (expected {})",
+                            one_of(&sections)
+                        ));
+                    };
                     for (k, v) in as_table(val, key)? {
                         let ctx = format!("{key}.{k}");
                         if k != "init" {
@@ -145,17 +125,8 @@ impl Config {
                         let Toml::String(s) = v else {
                             return err(format!("{ctx}: expected a string of {key} code"));
                         };
-                        if key == "zsh" {
-                            cfg.zsh_init = s.clone();
-                        } else {
-                            cfg.nu_init = s.clone();
-                        }
+                        cfg.init.insert(shell, s.clone());
                     }
-                }
-                _ => {
-                    return err(format!(
-                        "unknown section `{key}` (expected env, path, aliases, zsh or nu)"
-                    ));
                 }
             }
         }
@@ -185,18 +156,30 @@ fn value(v: &Toml, ctx: &str, allow_scalars: bool) -> Result<Value, Error> {
     };
     match v {
         Toml::Table(t) => {
-            let (mut zsh, mut nu) = (None, None);
+            let mut by_shell = BTreeMap::new();
             for (k, v) in t {
                 let sub = format!("{ctx}.{k}");
-                match k.as_str() {
-                    "zsh" => zsh = Some(scalar(v, &sub)?),
-                    "nu" => nu = Some(scalar(v, &sub)?),
-                    _ => return err(format!("{sub}: unknown key (expected `zsh` or `nu`)")),
-                }
+                let Some(shell) = Shell::named(k) else {
+                    let names = Shell::ALL.map(|s| format!("`{}`", s.name()));
+                    return err(format!("{sub}: unknown key (expected {})", one_of(&names)));
+                };
+                by_shell.insert(shell, scalar(v, &sub)?);
             }
-            Ok(Value::PerShell { zsh, nu })
+            Ok(Value::PerShell(by_shell))
         }
-        other => Ok(Value::Both(scalar(other, ctx)?)),
+        other => Ok(Value::All(scalar(other, ctx)?)),
+    }
+}
+
+/// "a, b or c"
+fn one_of<S: AsRef<str>>(items: &[S]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.as_ref().to_string(),
+        [init @ .., last] => {
+            let init: Vec<&str> = init.iter().map(AsRef::as_ref).collect();
+            format!("{} or {}", init.join(", "), last.as_ref())
+        }
     }
 }
 
@@ -244,12 +227,13 @@ mod tests {
         .unwrap();
         let names: Vec<_> = cfg.env.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(names, ["ZED", "ALPHA", "PAGER"]);
-        assert_eq!(cfg.env[1].1, Value::Both("1".into()));
+        assert_eq!(cfg.env[1].1, Value::All("1".into()));
         assert_eq!(cfg.env[2].1.get(Shell::Nu), Some("bat"));
         assert_eq!(cfg.path_prepend[1].get(Shell::Nu), None);
         assert_eq!(cfg.path_append.len(), 1);
         assert_eq!(cfg.aliases[1].1.get(Shell::Zsh), Some("ls -lh"));
-        assert_eq!(cfg.zsh_init, "setopt autocd");
+        assert_eq!(cfg.init[&Shell::Zsh], "setopt autocd");
+        assert_eq!(cfg.init[&Shell::Nu], "$env.config.show_banner = false");
     }
 
     #[test]

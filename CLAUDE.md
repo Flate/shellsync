@@ -28,12 +28,14 @@ Project state lives in `STATUS.md`; user-facing changes go into `CHANGELOG.md` u
 
 The pipeline is: TOML → `Config` → per-shell source text → cached files that shell hooks `source`.
 
-- `src/config.rs`: the config model and parser. It walks a `toml::Table` by hand rather than using serde derive so that errors name the exact key (`env.X.fish`, `path.prepend[0]`) and key order is preserved (an env var may reference one defined above it). `Value` is either `Both(String)` or `PerShell { zsh, nu }`; a missing side means "skip in that shell".
+- `src/config.rs`: the config model and parser. It walks a `toml::Table` by hand rather than using serde derive so that errors name the exact key (`env.X.fish`, `path.prepend[0]`) and key order is preserved (an env var may reference one defined above it). `Value` is either `All(String)` or `PerShell(BTreeMap<Shell, String>)`; a shell missing from the map skips the entry.
 - `src/template.rs`: parses `~`, `$NAME`, `${NAME}`, `$$` in env/path values into `Seg::Lit`/`Seg::Var`. Variables are emitted as references in each shell's syntax and resolved at shell start, not at build time.
-- `src/render.rs`: renders a `Config` to zsh or nu. Owns all quoting/escaping (`zsh_quote`, `zsh_template`, `nu_quote` with raw-string fallback, `nu_template`). Alias bodies are passed through verbatim as shell code; only env/path values go through templating.
-- `src/main.rs`: hand-rolled argument parsing, path resolution (`--config`/`$SHELLSYNC_CONFIG`/XDG), `build`, and hook install/uninstall.
+- `src/shell/mod.rs`: the `Shell` enum (`name()` is the config key and file suffix; `parse()` also accepts CLI aliases like `nushell`) and the shared renderer. `render_with::<D: Dialect>` walks the config in a fixed order (env, path, aliases, init) and asks the shell's `Dialect` for each line.
+- `src/shell/<shell>.rs`: everything specific to one shell: its `Dialect` impl, quoting/escaping, hook bodies and where its startup files are. Alias bodies are passed through verbatim as shell code; only env/path values go through templating. Adding a shell means a new module, a `Shell` variant, a `render` match arm, and `HookFile` variants.
+- `src/hooks.rs`: shell-independent hook handling: the `# >>> shellsync >>>` markers, `HookFile` (one per startup file; `block()` wraps the shell module's body), `files()` (where they go on this machine) and `splice`/`update_file`.
+- `src/main.rs`: hand-rolled argument parsing, `Paths` and path resolution (`--config`/`$SHELLSYNC_CONFIG`/XDG), `build` and staleness, `install`/`uninstall`/`edit`.
 
-Key invariants in `main.rs` that span the Rust code and the generated shell hooks:
+Key invariants that span the Rust code and the generated shell hooks:
 
 - **Staleness is mtime equality, not "newer".** `build` stamps each output with the config's mtime (taken *before* reading the config). `is_stale` in Rust, the zsh hook (`-nt` both ways) and the nu hook (`ls ... modified !=`) must all apply the same rule. Change one, change all three.
 - **The fast path spawns no process.** Hooks compare timestamps with shell builtins and only call the binary when stale. Don't add work to the hooks that forks.
@@ -42,7 +44,7 @@ Key invariants in `main.rs` that span the Rust code and the generated shell hook
 - **Hooks must not break a shell when the binary is missing** (dotfiles synced to a machine without shellsync): the zsh hook checks `-x $exe`, the nu env hook wraps the build in `try`, and `config.nu` uses `source (if (… | path exists) {…} else { null })`, which nushell evaluates at parse time. Covered by `shells_start_quietly_without_the_binary`.
 - **Outputs are written atomically** (temp file + rename) **with mode 0600**, since the config may hold secrets. Hook edits to dotfiles are written in place instead, so symlinked dotfiles stay symlinks.
 - **nushell split:** the rebuild check lives in `env.nu` and `config.nu` only does `source`, because nushell parses `config.nu` completely before running it, so the sourced file must already exist; `env.nu` runs first and can build it.
-- **Hooks are portable:** paths under `$HOME` are written as `~/...` (nu) or `"${HOME}/..."` (zsh) via `nu_path`/`zsh_path`, so synced dotfiles work on machines with a different home path. `hook()` takes the binary path and home directory as parameters, so unit tests can pin its exact output.
+- **Hooks are portable:** paths under `$HOME` are written as `~/...` (nu) or `"${HOME}/..."` (zsh) via each shell module's path quoting and `shell::home_relative`, so synced dotfiles work on machines with a different home path. `HookFile::block()` takes the binary path and home directory as parameters, so unit tests can pin its exact output.
 - **Hook blocks** are delimited by `# >>> shellsync >>>` / `# <<< shellsync <<<`; `splice` replaces, appends or removes the block and must stay idempotent (covered by `install_is_idempotent_and_uninstall_restores`). A start marker without an end marker is an error, never a guess.
 
 `examples/config.toml` is embedded with `include_str!` and written as the starter config by `install`/`edit`, so edits to it change what new users get.
