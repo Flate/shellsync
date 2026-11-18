@@ -8,7 +8,8 @@
 #   $$              a literal $
 #
 # Any value can be split per shell:  KEY = { zsh = "...", nu = "..." }
-# Leave a side out to skip it in that shell.
+# Leave a shell out to skip it there. `sh` stands for every shell with POSIX
+# sh syntax (currently zsh); a shell's own key takes precedence over it.
 
 [env]
 EDITOR = "vim"
@@ -25,7 +26,7 @@ prepend = ["~/.local/bin"]
 # both shells can share one line; split the rest.
 g = "git"
 gs = "git status"
-# ll = { zsh = "ls -lh", nu = "ls -l" }
+# ll = { sh = "ls -lh", nu = "ls -l" }
 
 [zsh]
 # Raw zsh code, appended to the generated file.
