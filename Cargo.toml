@@ -2,6 +2,10 @@
 name = "shellsync"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Configure zsh and nushell from one TOML file"
+repository = "https://git.flatenet.de/flate/shellsync"
+publish = false
 
 [dependencies]
 toml = { version = "1.2.1", default-features = false, features = ["parse", "preserve_order", "serde", "std"] }
