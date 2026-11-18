@@ -9,15 +9,16 @@
 
 ## In progress
 
-Improvement plan, steps 1–6 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key).
+Improvement plan, steps 1–7 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions).
 
 ## Known issues
 
 - `install` edits `.zshrc` and the nushell config in place, which conflicts with chezmoi-managed dotfiles
+- nushell sees tool installs/removals only after the next `shellsync build` (by design: nu decides aliases at parse time)
 
 ## Next steps
 
-1. Conditional entries as `[tool.X]` tables (`command`, `exists`); `hook --exe`; `.zshenv`/`.zshrc` split
+1. `hook --exe`; `.zshenv`/`.zshrc` split
 2. Release builds on `v*` tags (Linux x86_64, macOS arm64, Windows x86_64)
 3. `check` validates the output with each shell's parser
 4. PowerShell 7 (not Windows PowerShell), Windows, bash
