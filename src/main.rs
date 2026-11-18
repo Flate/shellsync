@@ -232,44 +232,26 @@ fn private_file(path: &Path) -> io::Result<fs::File> {
 
 /// Regenerates both outputs. Returns whether anything was written.
 ///
-/// On a config error the previous outputs are left untouched (so shells keep
-/// working with the last good config); if there are none yet, placeholders
-/// are written so that the nushell `source` line of hooks installed by
-/// earlier versions, which needs the file to exist, still parses.
+/// On a config error the previous outputs are left untouched, so shells keep
+/// working with the last good config.
 fn build(paths: &Paths, if_stale: bool) -> Result<bool> {
     if if_stale && !is_stale(paths) {
         return Ok(false);
     }
+    // Taken before reading, so an edit made during the build still differs.
+    let stamp = mtime(&paths.config);
+    let cfg = load(&paths.config)?;
     fs::create_dir_all(&paths.out_dir)
         .map_err(|e| format!("creating {}: {e}", paths.out_dir.display()))?;
     let source = paths.config.display().to_string();
-    // Taken before reading, so an edit made during the build still differs.
-    let stamp = mtime(&paths.config);
-    match load(&paths.config) {
-        Ok(cfg) => {
-            for shell in Shell::ALL {
-                write_atomic(
-                    &paths.output(shell),
-                    &render::render(&cfg, shell, &source),
-                    stamp,
-                )?;
-            }
-            Ok(true)
-        }
-        Err(e) => {
-            for shell in Shell::ALL {
-                let out = paths.output(shell);
-                if !out.exists() {
-                    write_atomic(
-                        &out,
-                        "# shellsync: the config has errors; run `shellsync check`\n",
-                        None,
-                    )?;
-                }
-            }
-            Err(e)
-        }
+    for shell in Shell::ALL {
+        write_atomic(
+            &paths.output(shell),
+            &render::render(&cfg, shell, &source),
+            stamp,
+        )?;
     }
+    Ok(true)
 }
 
 fn check(paths: &Paths) -> Result {
@@ -663,7 +645,7 @@ mod tests {
         };
         fs::create_dir_all(&paths.out_dir).unwrap();
         fs::write(&paths.config, "[env]\nTOKEN = 'secret'\n").unwrap();
-        // An output from an older version, created with the default umask.
+        // An existing output with looser permissions, e.g. created by hand.
         let old = paths.output(Shell::Zsh);
         fs::write(&old, "").unwrap();
         fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();

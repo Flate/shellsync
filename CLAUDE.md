@@ -37,7 +37,8 @@ Key invariants in `main.rs` that span the Rust code and the generated shell hook
 
 - **Staleness is mtime equality, not "newer".** `build` stamps each output with the config's mtime (taken *before* reading the config). `is_stale` in Rust, the zsh hook (`-nt` both ways) and the nu hook (`ls ... modified !=`) must all apply the same rule. Change one, change all three.
 - **The fast path spawns no process.** Hooks compare timestamps with shell builtins and only call the binary when stale. Don't add work to the hooks that forks.
-- **Errors keep the last good build.** On a parse error, existing outputs are left untouched; if none exist, a placeholder is written (current hooks don't need it, but nushell hooks installed by older versions source the file unconditionally).
+- **Errors keep the last good build.** On a parse error, existing outputs are left untouched and nothing is written.
+- **No backward compatibility yet.** shellsync isn't installed anywhere, so the hook format, generated files and config schema can change freely; no migration code or compatibility shims.
 - **Hooks must not break a shell when the binary is missing** (dotfiles synced to a machine without shellsync): the zsh hook checks `-x $exe`, the nu env hook wraps the build in `try`, and `config.nu` uses `source (if (… | path exists) {…} else { null })`, which nushell evaluates at parse time. Covered by `shells_start_quietly_without_the_binary`.
 - **Outputs are written atomically** (temp file + rename) **with mode 0600**, since the config may hold secrets. Hook edits to dotfiles are written in place instead, so symlinked dotfiles stay symlinks.
 - **nushell split:** the rebuild check lives in `env.nu` and `config.nu` only does `source`, because nushell parses `config.nu` completely before running it, so the sourced file must already exist; `env.nu` runs first and can build it.

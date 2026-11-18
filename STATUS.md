@@ -14,7 +14,6 @@ Improvement plan, steps 1–5 of 13 done (housekeeping, test fix, CI, file permi
 ## Known issues
 
 - `install` edits `.zshrc` and the nushell config in place, which conflicts with chezmoi-managed dotfiles
-- Existing installs keep their old hooks until `shellsync install` is run again
 
 ## Next steps
 
@@ -23,6 +22,10 @@ Improvement plan, steps 1–5 of 13 done (housekeeping, test fix, CI, file permi
 3. Release builds on `v*` tags (Linux x86_64, macOS arm64, Windows x86_64)
 4. `check` validates the output with each shell's parser
 5. PowerShell 7 (not Windows PowerShell), Windows, bash
+
+## Constraints
+
+- Not installed on any machine yet: no backward compatibility needed for hooks, outputs or config format
 
 ## Open decisions
 
