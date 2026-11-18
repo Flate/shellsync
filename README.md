@@ -31,7 +31,10 @@ shellsync install
 `install` creates a starter config if you don't have one, builds it, and adds a
 small marked block to `~/.zshrc` (or `$ZDOTDIR/.zshrc`) and to nushell's
 `env.nu` and `config.nu`. Running it again is safe: the block is replaced, not
-duplicated. `shellsync uninstall` removes the blocks and leaves everything else
+duplicated. Paths under your home directory are written as `$HOME/...` or
+`~/...`, so the hooks still work if you sync your dotfiles to a machine with a
+different home path. The binary's location is written as-is unless it is under
+your home directory too, for example `~/.cargo/bin`. `shellsync uninstall` removes the blocks and leaves everything else
 in those files as it was.
 
 ## How it stays fast and invisible
@@ -39,7 +42,8 @@ in those files as it was.
 * **Startup does almost nothing.** The hooks compare two file timestamps with
   the shell's own builtins (`[[ -nt ]]` in zsh, `ls` in nushell) and then
   `source` a cached file. No extra process starts unless the config has
-  changed. Measured in zsh: about 2.5 ms for a full interactive start.
+  changed. Measured cost: about 2.5 ms for a whole interactive zsh start, and
+  about 3.5 ms added to a nushell start.
 * **Rebuilds happen on their own.** When the config's timestamp differs from the
   cached files', the first shell to start runs `shellsync build` (a few
   milliseconds), then loads the result.

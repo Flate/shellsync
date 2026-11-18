@@ -129,32 +129,55 @@ fn nu_end_to_end() {
     assert_eq!(lines[4], "echo hello;ls -l");
 }
 
+/// Runs `code` in the given shell with the installed hooks and returns
+/// (stdout, stderr).
+fn shell(shell: &str, home: &Path, code: &str) -> (String, String) {
+    let mut c = cmd(shell, home);
+    if shell == "nu" {
+        let dir = home.join(".config/nushell");
+        c.arg("--env-config").arg(dir.join("env.nu"));
+        c.arg("--config").arg(dir.join("config.nu"));
+        c.args(["-c", code]);
+    } else {
+        c.args(["-i", "-c", code]);
+    }
+    let out = c.output().unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
 #[test]
 fn edits_are_picked_up_and_errors_keep_last_good_config() {
-    if !has("zsh") {
-        eprintln!("zsh not installed, skipping");
-        return;
+    for (sh, print) in [("zsh", "print -r -- $GOPATH"), ("nu", "print $env.GOPATH")] {
+        if !has(sh) {
+            eprintln!("{sh} not installed, skipping");
+            continue;
+        }
+        // Each shell rebuilds on its own: no other shell runs in this HOME.
+        let home = setup();
+        let config = home.join(".config/shellsync/config.toml");
+        assert_eq!(
+            shell(sh, &home, print).0,
+            format!("{}/go", home.display()),
+            "{sh}"
+        );
+
+        fs::write(&config, "[env]\nGOPATH = '/elsewhere'\n").unwrap();
+        assert_eq!(shell(sh, &home, print).0, "/elsewhere", "{sh}");
+
+        // A broken config reports the error; the shell keeps the last good build.
+        fs::write(&config, "[env\n").unwrap();
+        let (out, err) = shell(sh, &home, print);
+        assert_eq!(out, "/elsewhere", "{sh}");
+        assert!(err.contains("config.toml"), "{sh}: {err}");
+
+        // Even with no previous build, the shell still starts.
+        fs::remove_dir_all(home.join(".cache/shellsync")).unwrap();
+        let (out, err) = shell(sh, &home, "print started");
+        assert_eq!(out, "started", "{sh}: {err}");
     }
-    let home = setup();
-    let config = home.join(".config/shellsync/config.toml");
-    let get = || {
-        let mut c = cmd("zsh", &home);
-        c.args(["-i", "-c", "print -r -- $GOPATH"]);
-        c.output().unwrap()
-    };
-    assert_eq!(
-        String::from_utf8_lossy(&get().stdout).trim(),
-        format!("{}/go", home.display())
-    );
-
-    fs::write(&config, "[env]\nGOPATH = '/elsewhere'\n").unwrap();
-    assert_eq!(String::from_utf8_lossy(&get().stdout).trim(), "/elsewhere");
-
-    // A broken config reports the error but the shell keeps the last good build.
-    fs::write(&config, "[env\n").unwrap();
-    let out = get();
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/elsewhere");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("config.toml"));
 }
 
 #[test]

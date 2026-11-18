@@ -368,11 +368,11 @@ fn hook(kind: HookFile, paths: &Paths) -> Result<String> {
             let q = nu_path;
             format!(
                 "do {{\n  \
-                 let exe = {exe}\n  \
-                 let cfg = {cfg}\n  \
-                 let out = {out}\n  \
+                 let exe = ({exe} | path expand)\n  \
+                 let cfg = ({cfg} | path expand)\n  \
+                 let out = ({out} | path expand)\n  \
                  if (not ($out | path exists)) or (($cfg | path exists) and ((ls $cfg | get 0.modified) != (ls $out | get 0.modified))) {{\n    \
-                 try {{ ^$exe build --config $cfg --out-dir {dir} }}\n  \
+                 try {{ ^$exe build --config $cfg --out-dir ({dir} | path expand) }}\n  \
                  }}\n\
                  }}\n",
                 exe = q(&exe),
@@ -381,7 +381,7 @@ fn hook(kind: HookFile, paths: &Paths) -> Result<String> {
                 dir = q(&paths.out_dir),
             )
         }
-        // `source` needs a path known at parse time; `$nu.home-path` is a constant.
+        // `source` needs a path known at parse time, and expands `~` itself.
         HookFile::NuConfig => format!("source {}\n", nu_path(&paths.output(Shell::Nu))),
     };
     Ok(format!("{BEGIN}\n{body}{END}\n"))
@@ -395,7 +395,7 @@ fn home_relative(p: &Path) -> Option<String> {
 
 fn nu_path(p: &Path) -> String {
     match home_relative(p) {
-        Some(rel) => format!("($nu.home-path | path join {})", render::nu_quote(&rel)),
+        Some(rel) => render::nu_quote(&format!("~/{rel}")),
         None => render::nu_quote(&p.display().to_string()),
     }
 }
