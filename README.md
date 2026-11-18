@@ -49,7 +49,8 @@ in those files as it was.
   milliseconds), then loads the result.
 * **Output is plain shell code.** The generated files are in
   `~/.cache/shellsync/` (`init.zsh`, `init.nu`); `shellsync print zsh` and
-  `shellsync print nu` show them.
+  `shellsync print nu` show them. Only your user can read them, since the
+  config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
   prints the error with its line number and keeps using the last good build.
 * **Writes are atomic,** so a shell that starts during a rebuild never reads a

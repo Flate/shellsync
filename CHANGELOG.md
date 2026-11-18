@@ -11,3 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `shellsync` CLI that generates zsh and nushell configuration from one TOML file: `install`, `uninstall`, `edit`, `build`, `check`, `print`, `hook`, `paths`
 - GitLab CI pipeline: lint, end-to-end tests on Linux and macOS, secret scan
+
+### Security
+
+- Generated files in the cache directory are created with mode 0600

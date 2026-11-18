@@ -202,19 +202,32 @@ fn is_stale(paths: &Paths) -> bool {
 }
 
 /// Writes via a temp file + rename so a shell starting concurrently never
-/// sources a half-written file.
+/// sources a half-written file. The result is readable only by the user,
+/// because the config may contain secrets.
 fn write_atomic(path: &Path, contents: &str, stamp: Option<SystemTime>) -> Result {
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    fs::write(&tmp, contents)
-        .and_then(|()| match stamp {
-            Some(t) => fs::File::options().write(true).open(&tmp)?.set_modified(t),
-            None => Ok(()),
-        })
-        .and_then(|()| fs::rename(&tmp, path))
-        .map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            format!("writing {}: {e}", path.display())
-        })
+    let write = || -> io::Result<()> {
+        // A leftover temp file would keep its old mode, so start fresh.
+        let _ = fs::remove_file(&tmp);
+        let mut file = private_file(&tmp)?;
+        file.write_all(contents.as_bytes())?;
+        if let Some(t) = stamp {
+            file.set_modified(t)?;
+        }
+        fs::rename(&tmp, path)
+    };
+    write().map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("writing {}: {e}", path.display())
+    })
+}
+
+fn private_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
 }
 
 /// Regenerates both outputs. Returns whether anything was written.
@@ -544,5 +557,34 @@ mod tests {
         assert_eq!(splice(&installed, ""), "top\nbottom\n");
         assert_eq!(splice(&splice("a\n", &block), ""), "a\n");
         assert_eq!(splice("untouched\n", ""), "untouched\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn outputs_are_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = env::temp_dir().join(format!("shellsync-unit-perms-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let paths = Paths {
+            config: dir.join("config.toml"),
+            out_dir: dir.join("out"),
+        };
+        fs::create_dir_all(&paths.out_dir).unwrap();
+        fs::write(&paths.config, "[env]\nTOKEN = 'secret'\n").unwrap();
+        // An output from an older version, created with the default umask.
+        let old = paths.output(Shell::Zsh);
+        fs::write(&old, "").unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+
+        build(&paths, false).unwrap();
+        for shell in Shell::ALL {
+            let mode = fs::metadata(paths.output(shell))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(format!("{:o}", mode & 0o777), "600", "{}", shell.name());
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
