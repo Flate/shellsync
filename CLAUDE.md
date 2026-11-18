@@ -42,7 +42,7 @@ Key invariants in `main.rs` that span the Rust code and the generated shell hook
 - **Outputs are written atomically** (temp file + rename) **with mode 0600**, since the config may hold secrets. Hook edits to dotfiles are written in place instead, so symlinked dotfiles stay symlinks.
 - **nushell split:** the rebuild check lives in `env.nu` and `config.nu` only does `source`, because nushell parses `config.nu` completely before running it, so the sourced file must already exist; `env.nu` runs first and can build it.
 - **Hooks are portable:** paths under `$HOME` are written as `~/...` (nu) or `"${HOME}/..."` (zsh) via `nu_path`/`zsh_path`, so synced dotfiles work on machines with a different home path. `hook()` takes the binary path and home directory as parameters, so unit tests can pin its exact output.
-- **Hook blocks** are delimited by `# >>> shellsync >>>` / `# <<< shellsync <<<`; `splice` replaces, appends or removes the block and must stay idempotent (covered by `install_is_idempotent_and_uninstall_restores`).
+- **Hook blocks** are delimited by `# >>> shellsync >>>` / `# <<< shellsync <<<`; `splice` replaces, appends or removes the block and must stay idempotent (covered by `install_is_idempotent_and_uninstall_restores`). A start marker without an end marker is an error, never a guess.
 
 `examples/config.toml` is embedded with `include_str!` and written as the starter config by `install`/`edit`, so edits to it change what new users get.
 

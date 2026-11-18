@@ -466,36 +466,38 @@ fn hook_files() -> Vec<(HookFile, PathBuf)> {
 }
 
 /// Returns `text` with the shellsync block replaced by `block` (or removed
-/// when `block` is empty). A missing block is appended.
-fn splice(text: &str, block: &str) -> String {
-    let range = text.find(BEGIN).and_then(|start| {
-        let end = start + text[start..].find(END)? + END.len();
-        let end = if text[end..].starts_with('\n') {
-            end + 1
-        } else {
-            end
+/// when `block` is empty). A missing block is appended. A start marker
+/// without an end marker is an error: where the block ends is a guess, and a
+/// wrong guess would delete the user's own lines.
+fn splice(text: &str, block: &str) -> Result<String> {
+    let Some(start) = text.find(BEGIN) else {
+        if block.is_empty() {
+            return Ok(text.to_string());
+        }
+        let sep = match text {
+            "" => "",
+            t if t.ends_with("\n\n") => "",
+            t if t.ends_with('\n') => "\n",
+            _ => "\n\n",
         };
-        Some(start..end)
-    });
-    match range {
-        Some(r) => {
-            let mut before = &text[..r.start];
-            if block.is_empty() && before.ends_with("\n\n") {
-                before = &before[..before.len() - 1]; // the separator install added
-            }
-            format!("{before}{block}{}", &text[r.end..])
-        }
-        None if block.is_empty() => text.to_string(),
-        None => {
-            let sep = match text {
-                "" => "",
-                t if t.ends_with("\n\n") => "",
-                t if t.ends_with('\n') => "\n",
-                _ => "\n\n",
-            };
-            format!("{text}{sep}{block}")
-        }
+        return Ok(format!("{text}{sep}{block}"));
+    };
+    let end = text[start..]
+        .find(END)
+        .map(|i| start + i + END.len())
+        .ok_or_else(|| {
+            format!("found `{BEGIN}` without `{END}`; fix or remove the block by hand")
+        })?;
+    let end = if text[end..].starts_with('\n') {
+        end + 1
+    } else {
+        end
+    };
+    let mut before = &text[..start];
+    if block.is_empty() && before.ends_with("\n\n") {
+        before = &before[..before.len() - 1]; // the separator install added
     }
+    Ok(format!("{before}{block}{}", &text[end..]))
 }
 
 fn update_file(path: &Path, block: &str) -> Result<bool> {
@@ -505,7 +507,7 @@ fn update_file(path: &Path, block: &str) -> Result<bool> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(format!("reading {}: {e}", path.display())),
     };
-    let new = splice(&old, block);
+    let new = splice(&old, block).map_err(|e| format!("{}: {e}", path.display()))?;
     if new == old {
         return Ok(false);
     }
@@ -558,6 +560,7 @@ mod tests {
 
     #[test]
     fn splice_appends_replaces_and_removes() {
+        let splice = |text: &str, block: &str| super::splice(text, block).unwrap();
         let block = format!("{BEGIN}\nnew\n{END}\n");
         assert_eq!(splice("", &block), block);
         assert_eq!(splice("a", &block), format!("a\n\n{block}"));
@@ -637,6 +640,14 @@ mod tests {
         assert_eq!(nu_path(odd, home), "r#'~/it's $x/bin'#");
         let outside = Path::new("/opt/it's");
         assert_eq!(zsh_path(outside, home), r"'/opt/it'\''s'");
+    }
+
+    #[test]
+    fn splice_refuses_a_block_without_end_marker() {
+        let broken = format!("top\n{BEGIN}\nold\nuser content\n");
+        let block = format!("{BEGIN}\nnew\n{END}\n");
+        assert!(splice(&broken, &block).is_err());
+        assert!(splice(&broken, "").is_err());
     }
 
     #[cfg(unix)]

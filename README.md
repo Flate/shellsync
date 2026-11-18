@@ -121,6 +121,9 @@ hooks, so later changes to those variables don't affect existing hooks.
   zsh sessions, set them in `~/.zshenv` as well.
 * After upgrading shellsync, run `shellsync install` once. It regenerates the
   files and updates the hooks if the new version changed them.
+* If `install` or `uninstall` reports a start marker (`# >>> shellsync >>>`)
+  without an end marker, the block was damaged by hand. shellsync doesn't guess
+  where it ends; fix or remove it yourself.
 
 ## Development
 
