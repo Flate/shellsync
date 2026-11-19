@@ -9,12 +9,11 @@
 
 ## In progress
 
-Improvement plan, steps 1–7 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions).
+Improvement plan, steps 1–7b of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup).
 
 ## Known issues
 
 - `install` edits `.zshrc` and the nushell config in place, which conflicts with chezmoi-managed dotfiles
-- nushell sees tool installs/removals only after the next `shellsync build` (by design: nu decides aliases at parse time)
 
 ## Next steps
 
