@@ -9,18 +9,18 @@
 
 ## In progress
 
-Improvement plan, steps 1–7b of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup).
+Improvement plan, steps 1–8 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup, `.zshenv`/`.zshrc` split and `--exe`).
 
 ## Known issues
 
-- `install` edits `.zshrc` and the nushell config in place, which conflicts with chezmoi-managed dotfiles
+- None known
 
 ## Next steps
 
-1. `hook --exe`; `.zshenv`/`.zshrc` split
-2. Release builds on `v*` tags (Linux x86_64, macOS arm64, Windows x86_64)
-3. `check` validates the output with each shell's parser
-4. PowerShell 7 (not Windows PowerShell), Windows, bash
+1. Release builds on `v*` tags (Linux x86_64, macOS arm64, Windows x86_64)
+2. `check` validates the output with each shell's parser
+3. PowerShell 7 (not Windows PowerShell), Windows, bash
+4. Dotfiles: shellsync config template and hook blocks (via `hook --exe`) in the chezmoi repo
 
 ## Constraints
 
