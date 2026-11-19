@@ -291,8 +291,9 @@ fn generate(cfg: &Config, source: &str, checks: &Checks) -> Vec<(Shell, &'static
 /// `nu_tools` are the `[tool]` tables nushell found when it started; without
 /// it, conditions are checked in this process's environment.
 ///
-/// On a config error the previous outputs are left untouched, so shells keep
-/// working with the last good config.
+/// On a config error, or if a shell can't parse the code generated for it,
+/// the previous outputs are left untouched, so shells keep working with the
+/// last good config.
 fn build(paths: &Paths, if_stale: bool, nu_tools: Option<&[String]>) -> Result<bool> {
     if if_stale && !is_stale(paths) {
         return Ok(false);
@@ -308,7 +309,21 @@ fn build(paths: &Paths, if_stale: bool, nu_tools: Option<&[String]>) -> Result<b
         Some(found) => Checks::Found(found),
         None => Checks::Now(&probe),
     };
-    for (_, name, text) in generate(&cfg, &source, &checks) {
+    let files = generate(&cfg, &source, &checks);
+    let failed: String = parse_all(&cfg, &files)?
+        .into_iter()
+        .filter_map(|(shell, errors)| match errors {
+            Some(errors) if !errors.is_empty() => Some(report(shell, &errors)),
+            _ => None,
+        })
+        .collect();
+    if !failed.is_empty() {
+        return Err(format!(
+            "the generated code doesn't parse, so the shells keep the last good build\n{}",
+            failed.trim_end()
+        ));
+    }
+    for (_, name, text) in files {
         write_atomic(&paths.output(name), &text, stamp)?;
     }
     Ok(true)
@@ -335,24 +350,48 @@ fn check(paths: &Paths) -> Result {
         cfg.tools.len()
     );
 
-    let dir = TempDir::new("check")?;
     // As if every tool applied, so all of them are checked, installed here or not.
     let all: Vec<String> = cfg.tools.iter().map(|t| t.name.clone()).collect();
     let files = generate(&cfg, "check", &Checks::Found(&all));
-    let mut errors = 0;
-    for shell in Shell::ALL {
-        let files: Vec<_> = files
-            .iter()
-            .filter(|(s, ..)| *s == shell)
-            .map(|(_, name, text)| (*name, text.as_str()))
-            .collect();
-        errors += check_shell(&cfg, shell, &files, &dir.0)?;
+    let mut count = 0;
+    for (shell, errors) in parse_all(&cfg, &files)? {
+        match errors {
+            Some(errors) => {
+                count += errors.len();
+                print!("{}", report(shell, &errors));
+            }
+            None => println!("{}: not installed, not checked", shell.name()),
+        }
     }
-    match errors {
+    match count {
         0 => Ok(()),
         1 => Err("1 parse error".into()),
         n => Err(format!("{n} parse errors")),
     }
+}
+
+/// A parse error: what it is in (a config key or a generated file) and the
+/// shell's message.
+type ParseError = (String, String);
+
+/// Parses the generated `files` with the shell each is for. Returns each
+/// shell's errors, or None if the shell isn't installed.
+fn parse_all(
+    cfg: &Config,
+    files: &[(Shell, &str, String)],
+) -> Result<Vec<(Shell, Option<Vec<ParseError>>)>> {
+    let dir = TempDir::new()?;
+    Shell::ALL
+        .into_iter()
+        .map(|shell| {
+            let files: Vec<_> = files
+                .iter()
+                .filter(|(s, ..)| *s == shell)
+                .map(|(_, name, text)| (*name, text.as_str()))
+                .collect();
+            Ok((shell, parse_shell(cfg, shell, &files, &dir.0)?))
+        })
+        .collect()
 }
 
 /// Parses `code` with `shell`, from a file named `name` in `dir`. Returns the
@@ -377,20 +416,24 @@ fn parse(shell: Shell, dir: &Path, name: &str, code: &str) -> Result<Option<Stri
 }
 
 /// Parses the files generated for `shell` and the config's raw code for it
-/// with the shell itself, and prints the result. Returns the number of errors.
+/// with the shell itself. None if the shell isn't installed.
 ///
 /// Errors are reported by config key where possible: if a generated file
 /// doesn't parse, each alias and init block is parsed on its own to find the
 /// culprit. Code that only parses in context (a nushell variable from an
 /// earlier block) is then reported too.
-fn check_shell(cfg: &Config, shell: Shell, files: &[(&str, &str)], dir: &Path) -> Result<usize> {
+fn parse_shell(
+    cfg: &Config,
+    shell: Shell,
+    files: &[(&str, &str)],
+    dir: &Path,
+) -> Result<Option<Vec<ParseError>>> {
     let sh = shell.name();
     // Looked up here: on Linux, running a missing program can fail like a
     // program that exits with 127, not with "not found".
     let probe = Probe::from_env();
     if !probe.holds(&Condition::Command(sh.into()), &probe.path_dirs()) {
-        println!("{sh}: not installed, not checked");
-        return Ok(0);
+        return Ok(None);
     }
     let mut file_errors = Vec::new();
     for (name, text) in files {
@@ -416,32 +459,37 @@ fn check_shell(cfg: &Config, shell: Shell, files: &[(&str, &str)], dir: &Path) -
     if !explained {
         errors.extend(file_errors);
     }
+    Ok(Some(errors))
+}
 
-    match errors.len() {
-        0 => println!("{sh}: ok"),
-        1 => println!("{sh}: 1 error"),
-        n => println!("{sh}: {n} errors"),
-    }
-    for (what, msg) in &errors {
+/// `shell`'s line in `check`'s output, followed by the errors.
+fn report(shell: Shell, errors: &[ParseError]) -> String {
+    let sh = shell.name();
+    let mut out = match errors.len() {
+        0 => format!("{sh}: ok\n"),
+        1 => format!("{sh}: 1 error\n"),
+        n => format!("{sh}: {n} errors\n"),
+    };
+    for (what, msg) in errors {
         // zsh's messages start with the file name, which is the key already.
         if msg.starts_with(what.as_str()) {
-            println!("  {msg}");
+            out += &format!("  {msg}\n");
             continue;
         }
-        println!("  {what}:");
+        out += &format!("  {what}:\n");
         for line in msg.lines() {
-            println!("    {line}");
+            out += &format!("    {line}\n");
         }
     }
-    Ok(errors.len())
+    out
 }
 
 /// A directory only the user can read, removed when dropped.
 struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(name: &str) -> Result<TempDir> {
-        let dir = env::temp_dir().join(format!("shellsync-{name}-{}", std::process::id()));
+    fn new() -> Result<TempDir> {
+        let dir = env::temp_dir().join(format!("shellsync-{}", std::process::id()));
         // A leftover from an earlier process with the same id.
         let _ = fs::remove_dir_all(&dir);
         let mut builder = fs::DirBuilder::new();

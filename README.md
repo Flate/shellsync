@@ -63,8 +63,8 @@ depend on where shellsync ran when you printed them.
   removed). Measured cost: about 2.5 ms for a whole interactive zsh start, and
   about 3.5 ms added to a nushell start.
 * **Rebuilds happen on their own.** When the config's timestamp differs from the
-  cached files', the first shell to start runs `shellsync build` (a few
-  milliseconds), then loads the result.
+  cached files', the first shell to start runs `shellsync build` (about 35 ms,
+  most of it zsh and nushell parsing the result), then loads the result.
 * **Output is plain shell code.** The generated files are in
   `~/.cache/shellsync/` (`env.zsh`, `init.zsh`, `init.nu`, and `tools.nu` for
   nushell's [tool checks](#conditional-entries)); `shellsync print zsh` and
@@ -72,6 +72,9 @@ depend on where shellsync ran when you printed them.
   config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
   prints the error with its line number and keeps using the last good build.
+  The same goes for code that zsh or nushell can't parse, such as a typo in an
+  alias: before writing, `build` has each installed shell parse what it
+  generated (see [`check`](#commands)), and writes nothing if one fails.
   If the shellsync binary is missing, for example because your dotfiles were
   synced to a machine without it, shells start normally without the
   generated settings.
@@ -217,8 +220,14 @@ parse stops the whole config from loading, and some aliases that work in zsh
 don't parse there: nushell can't alias a pipeline (`ls -l | sort`). Errors
 name the config key they come from, such as `aliases.ll` or
 `tool.fzf.zsh.init`. Every `[tool]` table is checked, whether the tool is
-installed or not. A shell that isn't installed is skipped. `build` and the
-hooks don't run this check: run `shellsync check` after editing the config.
+installed or not. A shell that isn't installed is skipped. `build` (and so
+`edit` and the hooks) runs the same check on the code it is about to write,
+for the tools that apply on this machine, and keeps the last good build if
+it fails.
+
+The code is parsed on its own, without the rest of your `.zshrc` or
+`config.nu`. A nushell variable defined in your `config.nu` isn't known
+there, so code that uses it doesn't parse; define it in `[nu] init` instead.
 
 ## Notes
 

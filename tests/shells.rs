@@ -474,6 +474,21 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
         assert_eq!(out, "/elsewhere", "{sh}");
         assert!(err.contains("config.toml"), "{sh}: {err}");
 
+        // So does valid TOML with code the shells can't parse; in nushell it
+        // would stop the whole config from loading.
+        fs::write(
+            &config,
+            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { zsh = \"echo 'open\", nu = \"ls | sort\" }\n",
+        )
+        .unwrap();
+        let (out, err) = shell(sh, &home, print);
+        assert_eq!(out, "/elsewhere", "{sh}: {err}");
+        assert!(err.contains("keep the last good build"), "{sh}: {err}");
+        assert!(err.contains("aliases.bad"), "{sh}: {err}");
+
+        fs::write(&config, "[env]\nGOPATH = '/fixed'\n").unwrap();
+        assert_eq!(shell(sh, &home, print).0, "/fixed", "{sh}");
+
         // Even with no previous build, the shell still starts.
         fs::remove_dir_all(home.join(".cache/shellsync")).unwrap();
         let (out, err) = shell(sh, &home, "print started");
