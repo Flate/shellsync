@@ -1,6 +1,8 @@
 stages:
   - lint
   - test
+  - build
+  - release
 
 # Branch pipelines, or merge request pipelines once an MR is open, never both.
 workflow:
@@ -85,3 +87,82 @@ test:macos:
     - nu --version
   script:
     - cargo test --locked
+
+# Release builds run on v* tags. On the default branch they can be started by
+# hand to try a release before tagging: `release` then only prints what it
+# would publish.
+.release:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+      variables:
+        RELEASE_ARGS: --dry-run
+
+# Built from a clean state, without the test jobs' caches.
+.build:
+  extends: .release
+  stage: build
+  cache: []
+  script:
+    - cargo build --release --locked --target "$TARGET"
+    - mkdir -p dist
+    - cp "target/$TARGET/release/shellsync$EXE" "dist/shellsync-$TARGET$EXE"
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 30 days
+
+# Fails a tag pipeline early if the tag, Cargo.toml and CHANGELOG.md disagree.
+release:check:
+  extends: .rust
+  stage: lint
+  cache: []
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  script:
+    - ci/release.sh check
+
+build:linux:
+  extends: [.rust, .build]
+  variables:
+    TARGET: x86_64-unknown-linux-musl
+    EXE: ""
+  before_script:
+    - rustup target add "$TARGET"
+
+build:windows:
+  extends: [.rust, .build]
+  variables:
+    TARGET: x86_64-pc-windows-gnu
+    EXE: .exe
+    DEBIAN_FRONTEND: noninteractive
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+    - rustup target add "$TARGET"
+
+# Homebrew's Rust, like test:macos (not pinned).
+build:macos:
+  extends: .build
+  tags:
+    - macos
+  variables:
+    TARGET: aarch64-apple-darwin
+    EXE: ""
+  before_script:
+    - export PATH="/opt/homebrew/bin:$PATH"
+    - cargo --version
+
+release:
+  extends: [.rust, .release]
+  stage: release
+  cache: []
+  needs: [build:linux, build:macos, build:windows]
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+  script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends ca-certificates curl jq
+    - ci/release.sh publish $RELEASE_ARGS

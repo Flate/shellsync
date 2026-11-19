@@ -23,10 +23,21 @@ ll = { zsh = "ls -lh", nu = "ls -l" }   # different per shell
 
 ## Install
 
+Download the binary for your platform and `SHA256SUMS` from the
+[releases](https://git.flatenet.de/flate/shellsync/-/releases), check it, and
+put it on your PATH as `shellsync`. For example, on a Mac:
+
 ```sh
-cargo install --path .     # or: cargo build --release, then copy target/release/shellsync onto your PATH
+shasum -a 256 --check --ignore-missing SHA256SUMS   # Linux: sha256sum --check --ignore-missing SHA256SUMS
+install -m 755 shellsync-aarch64-apple-darwin ~/.local/bin/shellsync
 shellsync install
 ```
+
+Releases have binaries for Linux x86_64 (static, any distribution), macOS on
+Apple silicon and Windows x86_64. The Windows binary is built ahead of Windows
+support: shellsync doesn't support Windows yet. To build it yourself instead,
+run `cargo install --path .`, or `cargo build --release` and copy
+`target/release/shellsync` onto your PATH.
 
 `install` creates a starter config if you don't have one, builds it, and adds a
 small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`)
@@ -226,6 +237,22 @@ SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
 `cargo clippy`, then the tests on Linux (zsh and a pinned nushell) and on a
 macOS runner tagged `macos`.
+
+To release a version:
+
+1. Set `version` in `Cargo.toml` and run `cargo build`, so `Cargo.lock` follows.
+2. In `CHANGELOG.md`, move the `[Unreleased]` entries into a new section
+   `## [X.Y.Z] - YYYY-MM-DD`. `ci/release.sh check` now passes.
+3. Commit and push. In the pipeline for the default branch, start the
+   `build:*` jobs and then `release`, which only prints what it would publish.
+4. Tag the commit `vX.Y.Z` and push the tag. The tag must be protected (protect
+   `v*` under Settings > Repository > Protected tags). The tag pipeline runs the
+   tests, builds the binaries, uploads them with `SHA256SUMS` to the project's
+   package registry (package `shellsync`, version `X.Y.Z`) and creates the
+   GitLab release with the changelog section as its notes.
+
+Re-running a release job is safe: files already uploaded are kept, and a
+release job that would replace one with different contents fails instead.
 
 ## License
 
