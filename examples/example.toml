@@ -1,13 +1,13 @@
-# shellsync: one config for zsh and nushell.
+# shellsync: one config for zsh, nushell and PowerShell.
 #
-# Edit with `shellsync edit`. Changes apply to every new zsh / nu session.
+# Edit with `shellsync edit`. Changes apply to every new zsh, nu and pwsh session.
 #
 # In [env] values and [path] entries:
 #   ~/...           your home directory
 #   $NAME, ${NAME}  another environment variable (resolved at shell startup)
 #   $$              a literal $
 #
-# Any value can be split per shell:  KEY = { zsh = "...", nu = "..." }
+# Any value can be split per shell:  KEY = { zsh = "...", nu = "...", pwsh = "..." }
 # Leave a shell out to skip it there. `sh` stands for every shell with POSIX
 # sh syntax (currently zsh); a shell's own key takes precedence over it.
 
@@ -23,7 +23,8 @@ prepend = ["~/.local/bin"]
 
 [aliases]
 # Alias bodies are shell code, used as-is. Commands that behave the same in
-# both shells can share one line; split the rest.
+# every shell can share one line; split the rest. (In PowerShell, an alias
+# becomes a function that passes its arguments on.)
 g = "git"
 gs = "git status"
 # ll = { sh = "ls -lh", nu = "ls -l" }
@@ -40,5 +41,10 @@ init = '''
 
 [nu]
 # Raw nushell code, appended to the generated file.
+init = '''
+'''
+
+[pwsh]
+# Raw PowerShell code, appended to the generated file.
 init = '''
 '''

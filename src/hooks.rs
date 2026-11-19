@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::shell::{nu, zsh};
+use crate::shell::{nu, pwsh, zsh};
 use crate::{Paths, Result};
 
 pub const BEGIN: &str = "# >>> shellsync >>>";
@@ -16,6 +16,7 @@ pub enum HookFile {
     Zshrc,
     NuEnv,
     NuConfig,
+    PwshProfile,
 }
 
 impl HookFile {
@@ -26,6 +27,7 @@ impl HookFile {
             "zshrc" => Some(HookFile::Zshrc),
             "nu-env" => Some(HookFile::NuEnv),
             "nu-config" => Some(HookFile::NuConfig),
+            "pwsh" => Some(HookFile::PwshProfile),
             _ => None,
         }
     }
@@ -36,6 +38,7 @@ impl HookFile {
             HookFile::Zshrc => "zshrc",
             HookFile::NuEnv => "nu env",
             HookFile::NuConfig => "nu config",
+            HookFile::PwshProfile => "pwsh profile",
         }
     }
 
@@ -53,6 +56,7 @@ impl HookFile {
             HookFile::Zshrc => zsh::rc_hook(paths, home),
             HookFile::NuEnv => nu::env_hook(paths, exe, home),
             HookFile::NuConfig => nu::config_hook(paths, home),
+            HookFile::PwshProfile => pwsh::profile_hook(paths, exe, home),
         };
         format!("{BEGIN}\n{body}{END}\n")
     }
@@ -66,6 +70,7 @@ pub fn files() -> Vec<(HookFile, PathBuf)> {
         (HookFile::Zshrc, zsh::rc_file()),
         (HookFile::NuEnv, nu_env),
         (HookFile::NuConfig, nu_config),
+        (HookFile::PwshProfile, pwsh::profile_file()),
     ]
 }
 
@@ -201,6 +206,20 @@ mod tests {
                  {END}\n"
             )
         );
+        assert_eq!(
+            HookFile::PwshProfile.block(&paths, exe, home),
+            format!(
+                "{BEGIN}\n\
+                 & {{\n  \
+                 $exe = \"${{HOME}}/.cargo/bin/shellsync\"; $cfg = \"${{HOME}}/.config/shellsync/config.toml\"; $out = \"${{HOME}}/.cache/shellsync/init.ps1\"\n  \
+                 if ([IO.File]::Exists($exe) -and (-not [IO.File]::Exists($out) -or ([IO.File]::Exists($cfg) -and ([IO.File]::ResolveLinkTarget($cfg, $true) ?? [IO.FileInfo]::new($cfg)).LastWriteTimeUtc -ne [IO.File]::GetLastWriteTimeUtc($out)))) {{\n    \
+                 & $exe build --config $cfg --out-dir \"${{HOME}}/.cache/shellsync\"\n  \
+                 }}\n\
+                 }}\n\
+                 if ([IO.File]::Exists(\"${{HOME}}/.cache/shellsync/init.ps1\")) {{ . \"${{HOME}}/.cache/shellsync/init.ps1\" }}\n\
+                 {END}\n"
+            )
+        );
     }
 
     #[test]
@@ -215,6 +234,11 @@ mod tests {
         );
         let nu = HookFile::NuEnv.block(&paths, exe, home);
         assert!(nu.contains("let exe = ('/opt/homebrew/bin/shellsync' | path expand)"));
+        let pwsh = HookFile::PwshProfile.block(&paths, exe, home);
+        assert!(
+            pwsh.contains("$exe = '/opt/homebrew/bin/shellsync';"),
+            "{pwsh}"
+        );
 
         // With HOME=/ every path is "under home"; keep them absolute.
         let zsh = HookFile::Zshenv.block(&paths, exe, Path::new("/"));

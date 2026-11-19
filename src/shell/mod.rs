@@ -2,6 +2,7 @@
 //! module: quoting, the generated code, the startup hooks and where they go.
 
 pub mod nu;
+pub mod pwsh;
 pub mod zsh;
 
 use std::path::{Path, PathBuf};
@@ -14,16 +15,18 @@ use crate::probe::Probe;
 pub enum Shell {
     Zsh,
     Nu,
+    Pwsh,
 }
 
 impl Shell {
-    pub const ALL: [Shell; 2] = [Shell::Zsh, Shell::Nu];
+    pub const ALL: [Shell; 3] = [Shell::Zsh, Shell::Nu, Shell::Pwsh];
 
     /// The name used in the config file and in generated file names.
     pub fn name(self) -> &'static str {
         match self {
             Shell::Zsh => "zsh",
             Shell::Nu => "nu",
+            Shell::Pwsh => "pwsh",
         }
     }
 
@@ -42,6 +45,7 @@ impl Shell {
     pub fn parse(s: &str) -> Option<Shell> {
         match s {
             "nushell" => Some(Shell::Nu),
+            "powershell" => Some(Shell::Pwsh),
             _ => Shell::named(s),
         }
     }
@@ -52,6 +56,7 @@ impl Shell {
         match self {
             Shell::Zsh => zsh::syntax_check(file),
             Shell::Nu => nu::syntax_check(file),
+            Shell::Pwsh => pwsh::syntax_check(file),
         }
     }
 
@@ -63,6 +68,7 @@ impl Shell {
             // path_helper in between, which moves earlier entries to the end.
             Shell::Zsh => &[("env.zsh", Parts::ENV), ("init.zsh", Parts::INTERACTIVE)],
             Shell::Nu => &[("init.nu", Parts::ALL)],
+            Shell::Pwsh => &[("init.ps1", Parts::ALL)],
         }
     }
 }
@@ -107,6 +113,11 @@ trait Dialect {
     /// `conditions` hold when the shell starts. None if the shell can't check
     /// them at startup; the build then decides, see [`Checks`].
     fn guard(conditions: &[Condition]) -> Option<(String, String)>;
+    /// Code the guards need: written before the first guarded block of a
+    /// file, and after the last.
+    fn guard_helpers() -> (&'static str, &'static str) {
+        ("", "")
+    }
 }
 
 /// How the build decides `[tool]` conditions for shells whose `Dialect`
@@ -130,6 +141,7 @@ pub fn render(cfg: &Config, shell: Shell, source: &str, checks: &Checks) -> Rend
     match shell {
         Shell::Zsh => render_with::<zsh::Zsh>(cfg, shell, source, checks),
         Shell::Nu => render_with::<nu::Nu>(cfg, shell, source, checks),
+        Shell::Pwsh => render_with::<pwsh::Pwsh>(cfg, shell, source, checks),
     }
 }
 
@@ -148,6 +160,7 @@ pub fn snippets(cfg: &Config, shell: Shell) -> Vec<Snippet> {
     match shell {
         Shell::Zsh => snippets_with::<zsh::Zsh>(cfg, shell),
         Shell::Nu => snippets_with::<nu::Nu>(cfg, shell),
+        Shell::Pwsh => snippets_with::<pwsh::Pwsh>(cfg, shell),
     }
 }
 
@@ -233,17 +246,28 @@ fn body<D: Dialect>(
     tools: &[(&Tool, Decision)],
 ) -> String {
     let mut out = lines::<D>(&cfg.entries, shell, parts);
+    let (helpers, helpers_end) = D::guard_helpers();
+    let mut guarded = false;
     for (tool, decision) in tools {
         let block = tool_block::<D>(tool, shell, parts);
         if block.is_empty() {
             continue;
         }
         let name = &tool.name;
+        if matches!(decision, Decision::Guard(..)) && !guarded {
+            guarded = true;
+            if !helpers.is_empty() {
+                out.push_str(&format!("\n{helpers}"));
+            }
+        }
         out.push_str(&match decision {
             Decision::Guard(open, close) => format!("\n# tool: {name}\n{open}{block}{close}"),
             Decision::Applies => format!("\n# tool: {name}\n{block}"),
             Decision::Skipped(why) => format!("\n# tool: {name} (skipped: {why})\n"),
         });
+    }
+    if guarded {
+        out.push_str(helpers_end);
     }
     let code = cfg.entries.init(shell);
     if parts.interactive && !code.is_empty() {

@@ -271,6 +271,73 @@ fn nu_end_to_end() {
     assert_eq!(lines[7], "yes unset");
 }
 
+#[test]
+fn pwsh_end_to_end() {
+    if !has("pwsh") {
+        eprintln!("pwsh not installed, skipping");
+        return;
+    }
+    let home = setup();
+    let (out, err) = shell(
+        "pwsh",
+        &home,
+        "$env:GOPATH; $env:TRICKY; [bool]$env:ONLY_ZSH; $env:PATH; greet; over; \
+         [bool](Get-Command missing_tool -ErrorAction Ignore); $env:FROM_TOOL; \
+         [bool]$env:NOT_SET; [bool]$env:FOR_SH; [bool](Get-Command ll -ErrorAction Ignore)",
+    );
+    assert_eq!(err, "");
+    let lines: Vec<&str> = out.lines().collect();
+    let h = home.display();
+    assert_eq!(lines[0], format!("{h}/go"));
+    assert_eq!(lines[1], "it's \"q\" $x `y` (z) {w}");
+    assert_eq!(lines[2], "False", "zsh only");
+    assert!(
+        lines[3].starts_with(&format!("{h}/go/bin:/usr/bin:")),
+        "{}",
+        lines[3]
+    );
+    assert!(lines[3].ends_with(":/opt/shellsync-test"), "{}", lines[3]);
+    assert_eq!(lines[3].matches(":/usr/bin:").count(), 1, "deduplicated");
+    assert_eq!(lines[4], "hello");
+    assert_eq!(lines[5], "tool", "[tool.ls] overrides the base alias");
+    assert_eq!(lines[6], "False", "tool not installed");
+    assert_eq!(lines[7], "yes");
+    assert_eq!(lines[8], "False", "path doesn't exist");
+    assert_eq!(lines[9], "False", "`sh` doesn't cover pwsh");
+    assert_eq!(lines[10], "False", "no pwsh value");
+}
+
+/// A symlinked config (dotfiles linked into place) must not look changed at
+/// every start: the build stamps the outputs with the time of the file the
+/// link points to, so the hooks must compare that time, not the link's own.
+#[cfg(unix)]
+#[test]
+fn symlinked_config_does_not_rebuild_every_start() {
+    use std::os::unix::fs::MetadataExt;
+
+    for sh in ["zsh", "nu", "pwsh"] {
+        if !has(sh) {
+            eprintln!("{sh} not installed, skipping");
+            continue;
+        }
+        let home = setup();
+        let config = home.join(".config/shellsync/config.toml");
+        let target = home.join("dotfiles/shellsync.toml");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::rename(&config, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &config).unwrap();
+
+        let out = home.join(".cache/shellsync/init.nu");
+        let inode = || fs::metadata(&out).unwrap().ino();
+        let (_, err) = shell(sh, &home, "echo started");
+        assert_eq!(err, "", "{sh}");
+        let built = inode();
+        let (_, err) = shell(sh, &home, "echo started");
+        assert_eq!(err, "", "{sh}");
+        assert_eq!(inode(), built, "{sh}: rebuilt although nothing changed");
+    }
+}
+
 /// nushell checks `[tool]` conditions at every start, with its own PATH, and
 /// rebuilds only when the answer differs from the last build: here the build
 /// ran without the tool's directory on PATH, nushell has it.
@@ -344,6 +411,8 @@ fn shell(shell: &str, home: &Path, code: &str) -> (String, String) {
         c.arg("--env-config").arg(env_nu);
         c.arg("--config").arg(config_nu);
         c.args(["-c", code]);
+    } else if shell == "pwsh" {
+        c.args(["-NonInteractive", "-Command", code]);
     } else {
         c.args(["-i", "-c", code]);
     }
@@ -374,8 +443,8 @@ fn check(home: &Path, config: &str, path: &str) -> (bool, String, String) {
 
 #[test]
 fn check_parses_the_code_with_each_shell() {
-    if !has("zsh") || !has("nu") {
-        eprintln!("zsh or nu not installed, skipping");
+    if !has("zsh") || !has("nu") || !has("pwsh") {
+        eprintln!("zsh, nu or pwsh not installed, skipping");
         return;
     }
     let home = temp_home();
@@ -394,10 +463,11 @@ zsh.init = """
 if true; then
   echo x
 """
+pwsh.init = "if ($true) {"
 "#;
     let (ok, out, err) = check(&home, broken, &path);
     assert!(!ok);
-    assert_eq!(err, "shellsync: 3 parse errors\n");
+    assert_eq!(err, "shellsync: 4 parse errors\n");
     assert!(
         out.contains("\nzsh: 2 errors\n  aliases.quote:1: "),
         "{out}"
@@ -405,6 +475,10 @@ if true; then
     assert!(out.contains("\n  tool.c.zsh.init:3: parse error"), "{out}");
     assert!(out.contains("\nnu: 1 error\n  aliases.piped:\n"), "{out}");
     assert!(out.contains("Can't create alias to expression"), "{out}");
+    assert!(
+        out.contains("\npwsh: 1 error\n  tool.c.pwsh.init:1:"),
+        "{out}"
+    );
 
     // Parses only after the earlier block, as it does in the generated file.
     let in_context = r#"
@@ -418,7 +492,7 @@ nu.init = "print $shared"
     for config in [in_context, CONFIG] {
         let (ok, out, err) = check(&home, config, &path);
         assert!(ok, "{out}{err}");
-        assert!(out.ends_with("\nzsh: ok\nnu: ok\n"), "{out}");
+        assert!(out.ends_with("\nzsh: ok\nnu: ok\npwsh: ok\n"), "{out}");
     }
     fs::remove_dir_all(&home).unwrap();
 }
@@ -443,7 +517,9 @@ fn check_skips_shells_that_are_not_installed() {
     let (ok, out, err) = check(&home, CONFIG, bin.to_str().unwrap());
     assert!(ok, "{out}{err}");
     assert!(
-        out.ends_with("\nzsh: ok\nnu: not installed, not checked\n"),
+        out.ends_with(
+            "\nzsh: ok\nnu: not installed, not checked\npwsh: not installed, not checked\n"
+        ),
         "{out}"
     );
     fs::remove_dir_all(&home).unwrap();
@@ -451,7 +527,11 @@ fn check_skips_shells_that_are_not_installed() {
 
 #[test]
 fn edits_are_picked_up_and_errors_keep_last_good_config() {
-    for (sh, print) in [("zsh", "print -r -- $GOPATH"), ("nu", "print $env.GOPATH")] {
+    for (sh, print) in [
+        ("zsh", "print -r -- $GOPATH"),
+        ("nu", "print $env.GOPATH"),
+        ("pwsh", "$env:GOPATH"),
+    ] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
             continue;
@@ -478,7 +558,7 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
         // would stop the whole config from loading.
         fs::write(
             &config,
-            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { zsh = \"echo 'open\", nu = \"ls | sort\" }\n",
+            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { zsh = \"echo 'open\", nu = \"ls | sort\", pwsh = \"echo (\" }\n",
         )
         .unwrap();
         let (out, err) = shell(sh, &home, print);
@@ -491,7 +571,7 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
 
         // Even with no previous build, the shell still starts.
         fs::remove_dir_all(home.join(".cache/shellsync")).unwrap();
-        let (out, err) = shell(sh, &home, "print started");
+        let (out, err) = shell(sh, &home, "echo started");
         assert_eq!(out, "started", "{sh}: {err}");
     }
 }
@@ -500,7 +580,7 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
 /// missing or has moved. Shells must still start, without error output.
 #[test]
 fn shells_start_quietly_without_the_binary() {
-    for sh in ["zsh", "nu"] {
+    for sh in ["zsh", "nu", "pwsh"] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
             continue;
@@ -517,7 +597,7 @@ fn shells_start_quietly_without_the_binary() {
         fs::remove_file(&exe).unwrap();
         fs::remove_dir_all(home.join(".cache/shellsync")).unwrap();
 
-        let (out, err) = shell(sh, &home, "print started");
+        let (out, err) = shell(sh, &home, "echo started");
         assert_eq!(out, "started", "{sh}: {err}");
         assert_eq!(err, "", "{sh}");
     }
@@ -539,9 +619,10 @@ fn install_is_idempotent_and_uninstall_restores() {
     };
     install();
     let read = |f: &str| fs::read_to_string(home.join(f)).unwrap();
-    let once = [read(".zshenv"), read(".zshrc")];
+    let profile = ".config/powershell/profile.ps1";
+    let once = [read(".zshenv"), read(".zshrc"), read(profile)];
     install();
-    assert_eq!([read(".zshenv"), read(".zshrc")], once);
+    assert_eq!([read(".zshenv"), read(".zshrc"), read(profile)], once);
     for text in &once {
         assert_eq!(text.matches(">>> shellsync >>>").count(), 1);
     }
@@ -553,4 +634,5 @@ fn install_is_idempotent_and_uninstall_restores() {
     });
     assert_eq!(read(".zshrc"), "export KEEP=1\n");
     assert!(!read(".zshenv").contains("shellsync"));
+    assert!(!read(profile).contains("shellsync"));
 }
