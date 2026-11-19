@@ -146,6 +146,96 @@ fn zsh_end_to_end() {
     assert_eq!(lines[9], "yes unset");
 }
 
+/// `.zshenv` gives every zsh the environment, also scripts. Scripts neither
+/// rebuild nor print config errors, and don't get aliases.
+#[test]
+fn zsh_scripts_get_the_environment_only() {
+    if !has("zsh") {
+        eprintln!("zsh not installed, skipping");
+        return;
+    }
+    let home = setup();
+    let config = home.join(".config/shellsync/config.toml");
+    let env_zsh = home.join(".cache/shellsync/env.zsh");
+    let script = |code: &str| {
+        let mut c = cmd("zsh", &home);
+        c.args(["-c", code]);
+        let out = c.output().unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+    let probe = "print -r -- ${GOPATH:-unset}; alias greet || print no-alias";
+
+    // setup() replaced the starter config after install: stale, but a script
+    // uses the last build as it is.
+    let built = fs::metadata(&env_zsh).unwrap().modified().unwrap();
+    assert_eq!(script(probe), ("unset\nno-alias".into(), String::new()));
+    assert_eq!(fs::metadata(&env_zsh).unwrap().modified().unwrap(), built);
+
+    // An interactive shell rebuilds; scripts then get the new environment.
+    assert!(shell("zsh", &home, "alias greet").0.contains("echo hello"));
+    let gopath = format!("{}/go", home.display());
+    assert_eq!(
+        script(probe),
+        (format!("{gopath}\nno-alias"), String::new())
+    );
+
+    fs::write(&config, "[env\n").unwrap();
+    assert_eq!(
+        script(probe),
+        (format!("{gopath}\nno-alias"), String::new())
+    );
+}
+
+/// macOS login shells run path_helper from /etc/zprofile, after `.zshenv`,
+/// which moves PATH entries set there to the end. `.zshrc` sets them again.
+#[test]
+fn zsh_login_shells_keep_path_order() {
+    if !has("zsh") {
+        eprintln!("zsh not installed, skipping");
+        return;
+    }
+    let home = setup();
+    fs::write(
+        home.join(".zprofile"),
+        "export PATH=\"/usr/bin:/bin:$PATH\"\n",
+    )
+    .unwrap();
+    let mut c = cmd("zsh", &home);
+    c.args(["-l", "-i", "-c", "print -r -- $PATH"]);
+    let path = run(c);
+    assert!(
+        path.starts_with(&format!("{}/go/bin:/usr/bin:", home.display())),
+        "{path}"
+    );
+}
+
+#[test]
+fn hook_uses_the_given_binary() {
+    let home = temp_home();
+    let mut c = cmd(BIN, &home);
+    c.args(["hook", "zshenv", "--exe", "/opt/it's/shellsync"]);
+    let block = run(c);
+    assert!(
+        block.contains(r"local exe='/opt/it'\''s/shellsync' "),
+        "{block}"
+    );
+
+    // The current directory is reported resolved; on macOS the temp dir is
+    // behind a symlink.
+    let home = home.canonicalize().unwrap();
+    let mut c = cmd(BIN, &home);
+    c.args(["hook", "nu-env", "--exe", "bin/shellsync"])
+        .current_dir(&home);
+    let block = run(c);
+    assert!(
+        block.contains("let exe = ('~/bin/shellsync' | path expand)"),
+        "relative to the current directory: {block}"
+    );
+}
+
 #[test]
 fn nu_end_to_end() {
     if !has("nu") {
@@ -338,18 +428,19 @@ fn install_is_idempotent_and_uninstall_restores() {
         })
     };
     install();
-    let once = fs::read_to_string(home.join(".zshrc")).unwrap();
+    let read = |f: &str| fs::read_to_string(home.join(f)).unwrap();
+    let once = [read(".zshenv"), read(".zshrc")];
     install();
-    assert_eq!(fs::read_to_string(home.join(".zshrc")).unwrap(), once);
-    assert_eq!(once.matches(">>> shellsync >>>").count(), 1);
+    assert_eq!([read(".zshenv"), read(".zshrc")], once);
+    for text in &once {
+        assert_eq!(text.matches(">>> shellsync >>>").count(), 1);
+    }
 
     run({
         let mut c = cmd(BIN, &home);
         c.arg("uninstall");
         c
     });
-    assert_eq!(
-        fs::read_to_string(home.join(".zshrc")).unwrap(),
-        "export KEEP=1\n"
-    );
+    assert_eq!(read(".zshrc"), "export KEEP=1\n");
+    assert!(!read(".zshenv").contains("shellsync"));
 }

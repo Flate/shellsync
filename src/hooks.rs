@@ -12,6 +12,7 @@ pub const END: &str = "# <<< shellsync <<<";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookFile {
+    Zshenv,
     Zshrc,
     NuEnv,
     NuConfig,
@@ -21,7 +22,8 @@ impl HookFile {
     /// A hook as given on the command line.
     pub fn parse(s: &str) -> Option<HookFile> {
         match s {
-            "zsh" | "zshrc" => Some(HookFile::Zshrc),
+            "zshenv" => Some(HookFile::Zshenv),
+            "zshrc" => Some(HookFile::Zshrc),
             "nu-env" => Some(HookFile::NuEnv),
             "nu-config" => Some(HookFile::NuConfig),
             _ => None,
@@ -30,6 +32,7 @@ impl HookFile {
 
     pub fn name(self) -> &'static str {
         match self {
+            HookFile::Zshenv => "zshenv",
             HookFile::Zshrc => "zshrc",
             HookFile::NuEnv => "nu env",
             HookFile::NuConfig => "nu config",
@@ -46,7 +49,8 @@ impl HookFile {
     /// binary, so a missing binary or output is skipped silently.
     pub fn block(self, paths: &Paths, exe: &Path, home: &Path) -> String {
         let body = match self {
-            HookFile::Zshrc => zsh::rc_hook(paths, exe, home),
+            HookFile::Zshenv => zsh::env_hook(paths, exe, home),
+            HookFile::Zshrc => zsh::rc_hook(paths, home),
             HookFile::NuEnv => nu::env_hook(paths, exe, home),
             HookFile::NuConfig => nu::config_hook(paths, home),
         };
@@ -58,6 +62,7 @@ impl HookFile {
 pub fn files() -> Vec<(HookFile, PathBuf)> {
     let (nu_env, nu_config) = nu::config_files();
     vec![
+        (HookFile::Zshenv, zsh::env_file()),
         (HookFile::Zshrc, zsh::rc_file()),
         (HookFile::NuEnv, nu_env),
         (HookFile::NuConfig, nu_config),
@@ -160,15 +165,23 @@ mod tests {
         let paths = paths_under("/home/me");
         let exe = Path::new("/home/me/.cargo/bin/shellsync");
         assert_eq!(
-            HookFile::Zshrc.block(&paths, exe, home),
+            HookFile::Zshenv.block(&paths, exe, home),
             format!(
                 "{BEGIN}\n\
                  () {{\n  \
-                 local exe=\"${{HOME}}/.cargo/bin/shellsync\" cfg=\"${{HOME}}/.config/shellsync/config.toml\" out=\"${{HOME}}/.cache/shellsync/init.zsh\"\n  \
-                 if [[ -x $exe && ( ! -e $out || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
+                 local exe=\"${{HOME}}/.cargo/bin/shellsync\" cfg=\"${{HOME}}/.config/shellsync/config.toml\" out=\"${{HOME}}/.cache/shellsync/env.zsh\" rc=\"${{HOME}}/.cache/shellsync/init.zsh\"\n  \
+                 if [[ -o interactive && -x $exe && ( ! -e $out || ! -e $rc || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
                  $exe build --config $cfg --out-dir \"${{HOME}}/.cache/shellsync\"\n  \
                  fi\n\
                  }}\n\
+                 [[ -r \"${{HOME}}/.cache/shellsync/env.zsh\" ]] && source \"${{HOME}}/.cache/shellsync/env.zsh\"\n\
+                 {END}\n"
+            )
+        );
+        assert_eq!(
+            HookFile::Zshrc.block(&paths, exe, home),
+            format!(
+                "{BEGIN}\n\
                  [[ -r \"${{HOME}}/.cache/shellsync/init.zsh\" ]] && source \"${{HOME}}/.cache/shellsync/init.zsh\"\n\
                  {END}\n"
             )
@@ -195,7 +208,7 @@ mod tests {
         let paths = paths_under("/home/me");
         let exe = Path::new("/opt/homebrew/bin/shellsync");
         let home = Path::new("/home/me");
-        let zsh = HookFile::Zshrc.block(&paths, exe, home);
+        let zsh = HookFile::Zshenv.block(&paths, exe, home);
         assert!(
             zsh.contains("local exe='/opt/homebrew/bin/shellsync' "),
             "{zsh}"
@@ -204,7 +217,7 @@ mod tests {
         assert!(nu.contains("let exe = ('/opt/homebrew/bin/shellsync' | path expand)"));
 
         // With HOME=/ every path is "under home"; keep them absolute.
-        let zsh = HookFile::Zshrc.block(&paths, exe, Path::new("/"));
+        let zsh = HookFile::Zshenv.block(&paths, exe, Path::new("/"));
         assert!(
             zsh.contains("cfg='/home/me/.config/shellsync/config.toml'"),
             "{zsh}"

@@ -1,10 +1,10 @@
-//! zsh: generated code, and the hook in `.zshrc`.
+//! zsh: generated code, and the hooks in `.zshenv` and `.zshrc`.
 
 use std::env;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use super::{Dialect, Shell, home_relative};
+use super::{Dialect, home_relative};
 use crate::Paths;
 use crate::config::Condition;
 use crate::template::{self, Seg};
@@ -78,37 +78,55 @@ fn path_word(p: &Path, home: &Path) -> String {
     }
 }
 
-/// The hook body for `.zshrc`. The rebuild check runs in an anonymous
-/// function so its locals don't leak; `source` runs at top level so the
-/// generated code isn't function-scoped.
-pub fn rc_hook(paths: &Paths, exe: &Path, home: &Path) -> String {
+/// The hook body for `.zshenv`, which every zsh reads, also scripts. Only
+/// interactive shells rebuild, so scripts never start the binary or print
+/// config errors; they use the last build. The rebuild check runs in an
+/// anonymous function so its locals don't leak; `source` runs at top level
+/// so the generated code isn't function-scoped.
+pub fn env_hook(paths: &Paths, exe: &Path, home: &Path) -> String {
     let q = |p: &Path| path_word(p, home);
-    let out = q(&paths.output(Shell::Zsh));
+    let out = q(&paths.output("env.zsh"));
     format!(
         "() {{\n  \
-         local exe={exe} cfg={cfg} out={out}\n  \
-         if [[ -x $exe && ( ! -e $out || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
+         local exe={exe} cfg={cfg} out={out} rc={rc}\n  \
+         if [[ -o interactive && -x $exe && ( ! -e $out || ! -e $rc || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
          $exe build --config $cfg --out-dir {dir}\n  \
          fi\n\
          }}\n\
          [[ -r {out} ]] && source {out}\n",
         exe = q(exe),
         cfg = q(&paths.config),
+        rc = q(&paths.output("init.zsh")),
         dir = q(&paths.out_dir),
     )
 }
 
+/// The hook body for `.zshrc`; `.zshenv` has already rebuilt if needed.
+pub fn rc_hook(paths: &Paths, home: &Path) -> String {
+    let rc = path_word(&paths.output("init.zsh"), home);
+    format!("[[ -r {rc} ]] && source {rc}\n")
+}
+
+/// `.zshenv`, where zsh reads it: in `$ZDOTDIR` if set when zsh starts. If
+/// your `~/.zshenv` sets ZDOTDIR, it must source `$ZDOTDIR/.zshenv` itself.
+pub fn env_file() -> PathBuf {
+    zdotdir().join(".zshenv")
+}
+
 pub fn rc_file() -> PathBuf {
+    zdotdir().join(".zshrc")
+}
+
+fn zdotdir() -> PathBuf {
     env::var_os("ZDOTDIR")
         .map(PathBuf::from)
         .unwrap_or_else(crate::home)
-        .join(".zshrc")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::render_body;
+    use crate::shell::{Shell, render_body};
 
     #[test]
     fn quoting() {
@@ -129,6 +147,21 @@ mod tests {
         assert_eq!(path_word(Path::new("/opt/it's"), home), r"'/opt/it'\''s'");
     }
 
+    /// The two generated files, each as lines without the header.
+    fn render(cfg: &str) -> Vec<(&'static str, Vec<String>)> {
+        render_body(cfg, Shell::Zsh)
+            .into_iter()
+            .map(|(name, body)| (name, body.lines().map(String::from).collect()))
+            .collect()
+    }
+
+    fn expect(files: [(&'static str, &[&str]); 2]) -> Vec<(&'static str, Vec<String>)> {
+        files
+            .into_iter()
+            .map(|(name, lines)| (name, lines.iter().map(|l| l.to_string()).collect()))
+            .collect()
+    }
+
     #[test]
     fn renders() {
         let cfg = r#"
@@ -144,19 +177,27 @@ mod tests {
             [zsh]
             init = "\nsetopt autocd\n"
         "#;
+        let path = r#"path=("${GOPATH}/bin" $path "/opt/bin")"#;
         assert_eq!(
-            render_body(cfg, Shell::Zsh),
-            [
-                r#"export GOPATH="${HOME}/go""#,
-                "typeset -gU path",
-                r#"path=("${GOPATH}/bin" $path "/opt/bin")"#,
-                "alias -- g='git'",
-                r"alias -- q='echo '\''hi'\'''",
-                "",
-                "# --- init ---",
-                "setopt autocd",
-            ]
-            .join("\n")
+            render(cfg),
+            expect([
+                (
+                    "env.zsh",
+                    &[r#"export GOPATH="${HOME}/go""#, "typeset -gU path", path]
+                ),
+                (
+                    "init.zsh",
+                    &[
+                        "typeset -gU path",
+                        path,
+                        "alias -- g='git'",
+                        r"alias -- q='echo '\''hi'\'''",
+                        "",
+                        "# --- init ---",
+                        "setopt autocd",
+                    ]
+                ),
+            ])
         );
     }
 
@@ -173,35 +214,45 @@ mod tests {
             command = "~/bin/borg"
             exists = "/mnt/x"
             env.TMPDIR = "/tmp/b"
+            aliases.b = "borg"
             [tool.nu-only.aliases]
             x = { nu = "y" }
             [tool.fzf]
             sh.init = "source fzf.zsh"
         "#;
+        let borg = r#"if [[ -x "${HOME}/bin/borg" ]] && [[ -e "/mnt/x" ]]; then"#;
         assert_eq!(
-            render_body(cfg, Shell::Zsh),
-            [
-                "alias -- g='git'",
-                "",
-                "# tool: eza",
-                r#"if whence -p "eza" >/dev/null; then"#,
-                "alias -- ls='eza'",
-                "fi",
-                "",
-                "# tool: borg",
-                r#"if [[ -x "${HOME}/bin/borg" ]] && [[ -e "/mnt/x" ]]; then"#,
-                r#"export TMPDIR="/tmp/b""#,
-                "fi",
-                "",
-                "# tool: fzf",
-                r#"if whence -p "fzf" >/dev/null; then"#,
-                "source fzf.zsh",
-                "fi",
-                "",
-                "# --- init ---",
-                "base init",
-            ]
-            .join("\n")
+            render(cfg),
+            expect([
+                (
+                    "env.zsh",
+                    &["", "# tool: borg", borg, r#"export TMPDIR="/tmp/b""#, "fi"]
+                ),
+                (
+                    "init.zsh",
+                    &[
+                        "alias -- g='git'",
+                        "",
+                        "# tool: eza",
+                        r#"if whence -p "eza" >/dev/null; then"#,
+                        "alias -- ls='eza'",
+                        "fi",
+                        "",
+                        "# tool: borg",
+                        borg,
+                        "alias -- b='borg'",
+                        "fi",
+                        "",
+                        "# tool: fzf",
+                        r#"if whence -p "fzf" >/dev/null; then"#,
+                        "source fzf.zsh",
+                        "fi",
+                        "",
+                        "# --- init ---",
+                        "base init",
+                    ]
+                ),
+            ])
         );
     }
 
@@ -218,16 +269,20 @@ mod tests {
             init = "zsh only"
         "#;
         assert_eq!(
-            render_body(cfg, Shell::Zsh),
-            [
-                r#"export PAGER="less""#,
-                "alias -- ll='ls -lh'",
-                "",
-                "# --- init ---",
-                "shared",
-                "zsh only",
-            ]
-            .join("\n")
+            render(cfg),
+            expect([
+                ("env.zsh", &[r#"export PAGER="less""#]),
+                (
+                    "init.zsh",
+                    &[
+                        "alias -- ll='ls -lh'",
+                        "",
+                        "# --- init ---",
+                        "shared",
+                        "zsh only",
+                    ]
+                ),
+            ])
         );
     }
 }

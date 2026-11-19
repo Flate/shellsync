@@ -29,13 +29,21 @@ shellsync install
 ```
 
 `install` creates a starter config if you don't have one, builds it, and adds a
-small marked block to `~/.zshrc` (or `$ZDOTDIR/.zshrc`) and to nushell's
-`env.nu` and `config.nu`. Running it again is safe: the block is replaced, not
-duplicated. Paths under your home directory are written as `$HOME/...` or
-`~/...`, so the hooks still work if you sync your dotfiles to a machine with a
-different home path. The binary's location is written as-is unless it is under
-your home directory too, for example `~/.cargo/bin`. `shellsync uninstall` removes the blocks and leaves everything else
-in those files as it was.
+small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`)
+and to nushell's `env.nu` and `config.nu`. Running it again is safe: the block
+is replaced, not duplicated. Paths under your home directory are written as
+`$HOME/...` or `~/...`, so the hooks still work if you sync your dotfiles to a
+machine with a different home path. The binary's location is written as-is
+unless it is under your home directory too, for example `~/.cargo/bin`.
+`shellsync uninstall` removes the blocks and leaves everything else in those
+files as it was.
+
+**Dotfiles managed by a tool** such as chezmoi: `install` edits the files in
+place, which the tool would overwrite or report as changed. Instead, put the
+blocks into your templates. `shellsync hook zshenv` (and `zshrc`, `nu-env`,
+`nu-config`) prints each one; `--exe` sets where the binary is, for example
+`shellsync hook zshenv --exe ~/.local/bin/shellsync`, so the blocks don't
+depend on where shellsync ran when you printed them.
 
 ## How it stays fast and invisible
 
@@ -49,8 +57,8 @@ in those files as it was.
   cached files', the first shell to start runs `shellsync build` (a few
   milliseconds), then loads the result.
 * **Output is plain shell code.** The generated files are in
-  `~/.cache/shellsync/` (`init.zsh`, `init.nu`, and `tools.nu` for nushell's
-  [tool checks](#conditional-entries)); `shellsync print zsh` and
+  `~/.cache/shellsync/` (`env.zsh`, `init.zsh`, `init.nu`, and `tools.nu` for
+  nushell's [tool checks](#conditional-entries)); `shellsync print zsh` and
   `shellsync print nu` show them. Only your user can read them, since the
   config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
@@ -61,7 +69,16 @@ in those files as it was.
 * **Writes are atomic,** so a shell that starts during a rebuild never reads a
   half-written file.
 
-nushell parses `config.nu` completely before running it, so the file it
+**zsh** loads the environment from `.zshenv`, which every zsh reads, also
+scripts and cron jobs: environment variables and PATH are in `env.zsh`.
+Aliases and init code are in `init.zsh`, which `.zshrc` loads in interactive
+shells only. Only interactive shells rebuild, so a script uses the last build
+and never prints a config error. `init.zsh` sets the PATH entries again,
+because macOS login shells (the default in Terminal and iTerm) run
+`path_helper` from `/etc/zprofile` between the two, which moves PATH entries
+set earlier to the end.
+
+**nushell** parses `config.nu` completely before running it, so the file it
 `source`s has to exist beforehand. That's why the rebuild check lives in
 `env.nu`, which nushell runs first, and why `config.nu` only sources the file
 if it exists.
@@ -173,22 +190,25 @@ shellsync uninstall      remove hooks
 shellsync edit           open the config in $VISUAL/$EDITOR, then rebuild
 shellsync check          validate the config
 shellsync print zsh|nu   show the generated code
-shellsync hook zsh|nu-env|nu-config   print a hook block, for manual setup
+shellsync hook zshenv|zshrc|nu-env|nu-config   print a hook block, for manual setup
 shellsync paths          show the files involved
 shellsync build          rebuild by hand (normally done automatically)
 ```
 
 `--config FILE` and `--out-dir DIR` override the defaults. The config path can
 also be set with `$SHELLSYNC_CONFIG`, and `$XDG_CONFIG_HOME` and
-`$XDG_CACHE_HOME` are respected. `install` writes the resolved paths into the
-hooks, so later changes to those variables don't affect existing hooks.
+`$XDG_CACHE_HOME` are respected. `install` and `hook` write the resolved paths
+into the hooks, so later changes to those variables don't affect existing
+hooks. `--exe FILE` sets the binary the hooks run (default: the running one).
 
 ## Notes
 
 * Changes apply to **new** shells. In an already open zsh, run `exec zsh`.
-* zsh loads the generated file from `.zshrc`, which only interactive shells read.
-  To make variables visible to scripts started by cron or other non-interactive
-  zsh sessions, set them in `~/.zshenv` as well.
+* zsh reads `$ZDOTDIR/.zshenv` only if ZDOTDIR is set before zsh starts. If
+  your `~/.zshenv` sets ZDOTDIR, have it source `$ZDOTDIR/.zshenv`, or put the
+  `zshenv` block into `~/.zshenv` yourself.
+* After a config change, scripts get the new environment once an interactive
+  zsh (or `shellsync build`) has rebuilt it.
 * After upgrading shellsync, run `shellsync install` once. It regenerates the
   files and updates the hooks if the new version changed them.
 * If `install` or `uninstall` reports a start marker (`# >>> shellsync >>>`)

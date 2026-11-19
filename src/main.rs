@@ -23,19 +23,21 @@ Usage: shellsync <command> [options]
 
 Commands:
   install          Create the config if missing, build, and hook into
-                   ~/.zshrc and nushell's env.nu / config.nu
+                   ~/.zshenv, ~/.zshrc and nushell's env.nu / config.nu
   uninstall        Remove the hooks (config and cache are kept)
   edit             Open the config in $VISUAL / $EDITOR, then rebuild
   build            Regenerate the shell files (shells do this automatically)
   check            Validate the config
   print <shell>    Print the generated code for zsh or nu
-  hook <file>      Print the hook for zsh, nu-env or nu-config
+  hook <file>      Print the hook for zshenv, zshrc, nu-env or nu-config
   paths            Show the files shellsync reads and writes
 
 Options:
   --config <file>   Config file  [default: $SHELLSYNC_CONFIG or
                     ~/.config/shellsync/config.toml]
   --out-dir <dir>   Where generated files go  [default: ~/.cache/shellsync]
+  --exe <file>      (install, hook) The shellsync binary the hooks run
+                    [default: this binary]
   --if-stale        (build) Only rebuild if the config changed
   --nu-tools [<tool>...]
                     (build) The [tool] tables whose conditions hold in
@@ -52,8 +54,19 @@ struct Paths {
 }
 
 impl Paths {
-    fn output(&self, shell: Shell) -> PathBuf {
-        self.out_dir.join(format!("init.{}", shell.name()))
+    /// A generated file, by name (see `Shell::files`).
+    fn output(&self, name: &str) -> PathBuf {
+        self.out_dir.join(name)
+    }
+
+    /// Every generated file.
+    fn outputs(&self) -> Vec<PathBuf> {
+        Shell::ALL
+            .iter()
+            .flat_map(|s| s.files())
+            .map(|(name, _)| self.output(name))
+            .chain([self.nu_tools()])
+            .collect()
     }
 
     /// nushell's `[tool]` checks, see `shell::nu::tools_check`.
@@ -90,6 +103,7 @@ fn run(args: Vec<String>) -> Result {
     let mut out_dir = None;
     let mut if_stale = false;
     let mut nu_tools = None;
+    let mut exe = None;
     let mut positional = Vec::new();
 
     let mut it = args.into_iter();
@@ -101,6 +115,7 @@ fn run(args: Vec<String>) -> Result {
                     it.next().ok_or("--out-dir needs a directory")?,
                 ))
             }
+            "--exe" => exe = Some(PathBuf::from(it.next().ok_or("--exe needs a file")?)),
             "--if-stale" => if_stale = true,
             "--nu-tools" => nu_tools = Some(it.by_ref().collect::<Vec<_>>()),
             "-h" | "--help" | "help" => {
@@ -135,6 +150,11 @@ fn run(args: Vec<String>) -> Result {
         ),
     };
 
+    let exe = || match &exe {
+        Some(p) => Ok(absolute(p.clone())),
+        None => this_exe(),
+    };
+
     let shell_arg = |pos: &[String]| -> Result<Shell> {
         let s = pos.get(1).ok_or("expected a shell: zsh or nu")?;
         Shell::parse(s).ok_or_else(|| format!("unknown shell `{s}` (expected zsh or nu)"))
@@ -150,39 +170,37 @@ fn run(args: Vec<String>) -> Result {
         Some("print") => {
             let shell = shell_arg(&positional)?;
             let cfg = load(&paths.config)?;
-            print!(
-                "{}",
-                shell::render(
-                    &cfg,
-                    shell,
-                    &paths.config.display().to_string(),
-                    &Checks::Now(&Probe::from_env()),
-                )
-                .text
+            let out = shell::render(
+                &cfg,
+                shell,
+                &paths.config.display().to_string(),
+                &Checks::Now(&Probe::from_env()),
             );
+            for (i, (name, text)) in out.files.iter().enumerate() {
+                if out.files.len() > 1 {
+                    println!("{}# ===== {name}", if i > 0 { "\n" } else { "" });
+                }
+                print!("{text}");
+            }
             Ok(())
         }
         Some("hook") => {
             let which = positional
                 .get(1)
-                .ok_or("expected zsh, nu-env or nu-config")?;
+                .ok_or("expected zshenv, zshrc, nu-env or nu-config")?;
             let kind = HookFile::parse(which).ok_or_else(|| format!("unknown hook `{which}`"))?;
-            print!("{}", kind.block(&paths, &this_exe()?, &home()));
+            print!("{}", kind.block(&paths, &exe()?, &home()));
             Ok(())
         }
-        Some("install") => install(&paths),
+        Some("install") => install(&paths, &exe()?),
         Some("uninstall") => uninstall(),
         Some("edit") => edit(&paths),
         Some("paths") => {
-            println!("config     {}", paths.config.display());
-            for shell in Shell::ALL {
-                println!(
-                    "init.{:<5}  {}",
-                    shell.name(),
-                    paths.output(shell).display()
-                );
+            println!("{:<10} {}", "config", paths.config.display());
+            for file in paths.outputs() {
+                let name = file.file_name().unwrap_or_default().to_string_lossy();
+                println!("{name:<10} {}", file.display());
             }
-            println!("tools.nu    {}", paths.nu_tools().display());
             for (kind, file) in hooks::files() {
                 println!("{:<10} {}", kind.name(), file.display());
             }
@@ -212,13 +230,11 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 /// restored with an older timestamp. The shell hooks use the same rule.
 fn is_stale(paths: &Paths) -> bool {
     let cfg = mtime(&paths.config);
-    Shell::ALL
-        .iter()
-        .any(|&s| match (mtime(&paths.output(s)), cfg) {
-            (None, _) => true,
-            (Some(out), Some(cfg)) => cfg != out,
-            (Some(_), None) => false,
-        })
+    paths.outputs().iter().any(|out| match (mtime(out), cfg) {
+        (None, _) => true,
+        (Some(out), Some(cfg)) => cfg != out,
+        (Some(_), None) => false,
+    })
 }
 
 /// Writes via a temp file + rename so a shell starting concurrently never
@@ -274,7 +290,9 @@ fn build(paths: &Paths, if_stale: bool, nu_tools: Option<&[String]>) -> Result<b
     let mut nu_applied = Vec::new();
     for shell in Shell::ALL {
         let out = shell::render(&cfg, shell, &source, &checks);
-        write_atomic(&paths.output(shell), &out.text, stamp)?;
+        for (name, text) in &out.files {
+            write_atomic(&paths.output(name), text, stamp)?;
+        }
         if shell == Shell::Nu {
             nu_applied = out.applied;
         }
@@ -350,7 +368,7 @@ fn this_exe() -> Result<PathBuf> {
     env::current_exe().map_err(|e| format!("locating the shellsync binary: {e}"))
 }
 
-fn install(paths: &Paths) -> Result {
+fn install(paths: &Paths, exe: &Path) -> Result {
     let mut stdout = io::stdout();
     if ensure_config(paths)? {
         writeln!(
@@ -362,9 +380,8 @@ fn install(paths: &Paths) -> Result {
     }
     build(paths, false, None)?;
     writeln!(stdout, "built    {}", paths.out_dir.display()).ok();
-    let exe = this_exe()?;
     for (kind, file) in hooks::files() {
-        let changed = hooks::update_file(&file, &kind.block(paths, &exe, &home()))?;
+        let changed = hooks::update_file(&file, &kind.block(paths, exe, &home()))?;
         let verb = if changed { "hooked" } else { "ok" };
         writeln!(stdout, "{verb:<8} {}", file.display()).ok();
     }
@@ -403,14 +420,13 @@ mod tests {
         fs::create_dir_all(&paths.out_dir).unwrap();
         fs::write(&paths.config, "[env]\nTOKEN = 'secret'\n").unwrap();
         // An existing output with looser permissions, e.g. created by hand.
-        let old = paths.output(Shell::Zsh);
+        let old = paths.output("init.zsh");
         fs::write(&old, "").unwrap();
         fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
 
         build(&paths, false, None).unwrap();
-        let outputs = Shell::ALL.map(|s| paths.output(s));
-        for file in outputs.iter().chain([&paths.nu_tools()]) {
-            let mode = fs::metadata(file).unwrap().permissions().mode();
+        for file in paths.outputs() {
+            let mode = fs::metadata(&file).unwrap().permissions().mode();
             assert_eq!(format!("{:o}", mode & 0o777), "600", "{}", file.display());
         }
         fs::remove_dir_all(&dir).unwrap();
