@@ -10,11 +10,11 @@
 
 ## In progress
 
-Improvement plan, steps 1–10 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup, `.zshenv`/`.zshrc` split and `--exe`, release builds, `check` parses with each shell).
+Improvement plan, steps 1–10b of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup, `.zshenv`/`.zshrc` split and `--exe`, release builds, `check` and `build` parse with each shell).
 
 ## Known issues
 
-- Only `check` parses the shell code: `build`/`edit` write an alias or init block that doesn't parse, and in nushell that stops the whole config from loading
+- None known
 
 ## Next steps
 
