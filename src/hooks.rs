@@ -62,16 +62,18 @@ impl HookFile {
     }
 }
 
-/// Where each hook goes on this machine.
+/// Where each hook goes on this machine. zsh isn't a Windows shell.
 pub fn files() -> Vec<(HookFile, PathBuf)> {
+    let mut files = Vec::new();
+    if !cfg!(windows) {
+        files.push((HookFile::Zshenv, zsh::env_file()));
+        files.push((HookFile::Zshrc, zsh::rc_file()));
+    }
     let (nu_env, nu_config) = nu::config_files();
-    vec![
-        (HookFile::Zshenv, zsh::env_file()),
-        (HookFile::Zshrc, zsh::rc_file()),
-        (HookFile::NuEnv, nu_env),
-        (HookFile::NuConfig, nu_config),
-        (HookFile::PwshProfile, pwsh::profile_file()),
-    ]
+    files.push((HookFile::NuEnv, nu_env));
+    files.push((HookFile::NuConfig, nu_config));
+    files.push((HookFile::PwshProfile, pwsh::profile_file()));
+    files
 }
 
 /// Returns `text` with the shellsync block replaced by `block` (or removed

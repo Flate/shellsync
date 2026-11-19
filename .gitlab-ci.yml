@@ -47,8 +47,11 @@ lint:
   stage: lint
   script:
     - rustup component add rustfmt clippy
+    - rustup target add x86_64-pc-windows-msvc
     - cargo fmt --check
     - cargo clippy --locked --all-targets -- -D warnings
+    # Checks the Windows-only code too; no linker is needed for that.
+    - cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 
 test:linux:
   extends: .rust
@@ -92,6 +95,29 @@ test:macos:
   before_script:
     - export PATH="/opt/homebrew/bin:$PATH"
     - zsh --version
+    - nu --version
+    - pwsh --version
+  script:
+    - cargo test --locked
+
+# Runs on a Windows machine (shell executor, PowerShell) with Rust, nushell
+# and PowerShell installed machine-wide (not pinned). zsh isn't a Windows shell.
+test:windows:
+  stage: test
+  tags:
+    - windows
+  variables:
+    SHELLSYNC_REQUIRE_SHELLS: "1"
+  cache:
+    key:
+      prefix: $CI_JOB_NAME
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo-home/registry/
+      - target/
+  before_script:
+    - cargo --version
     - nu --version
     - pwsh --version
   script:
@@ -151,11 +177,25 @@ build:macos:
     - export PATH="/opt/homebrew/bin:$PATH"
     - cargo --version
 
+# Built and tested with the same toolchain, on Windows. The C runtime is
+# linked in, so the binary doesn't need the Visual C++ runtime installed.
+build:windows:
+  extends: .build
+  tags:
+    - windows
+  variables:
+    TARGET: x86_64-pc-windows-msvc
+    RUSTFLAGS: -C target-feature=+crt-static
+  script:
+    - cargo build --release --locked --target $env:TARGET
+    - New-Item -ItemType Directory -Force dist | Out-Null
+    - Copy-Item "target/$env:TARGET/release/shellsync.exe" "dist/shellsync-$env:TARGET.exe"
+
 release:
   extends: [.rust, .release]
   stage: release
   cache: []
-  needs: [build:linux, build:macos]
+  needs: [build:linux, build:macos, build:windows]
   variables:
     DEBIAN_FRONTEND: noninteractive
   script:

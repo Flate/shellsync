@@ -63,33 +63,50 @@ impl Probe {
         match condition {
             Condition::Command(name) => {
                 let name = self.expand(name);
-                path.iter().any(|dir| is_executable(&dir.join(&name)))
+                path.iter().any(|dir| self.is_executable(&dir.join(&name)))
             }
-            Condition::Executable(p) => is_executable(Path::new(&self.expand(p))),
+            Condition::Executable(p) => self.is_executable(Path::new(&self.expand(p))),
             Condition::Exists(p) => Path::new(&self.expand(p)).exists(),
         }
     }
-}
 
-fn is_executable(p: &Path) -> bool {
+    /// Whether a file at `p` can run. On Windows that's a file whose extension
+    /// is in PATHEXT, named with or without it, as the shells find commands.
     #[cfg(unix)]
-    {
+    fn is_executable(&self, p: &Path) -> bool {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     }
-    #[cfg(not(unix))]
-    {
-        p.is_file()
+
+    #[cfg(windows)]
+    fn is_executable(&self, p: &Path) -> bool {
+        let pathext = (self.var)("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+        let exts: Vec<&str> = pathext.split(';').filter(|e| !e.is_empty()).collect();
+        let has_ext = p.extension().is_some_and(|e| {
+            let e = format!(".{}", e.to_string_lossy());
+            exts.iter().any(|x| x.eq_ignore_ascii_case(&e))
+        });
+        (has_ext && p.is_file())
+            || exts.iter().any(|ext| {
+                let mut with_ext = p.as_os_str().to_owned();
+                with_ext.push(ext);
+                Path::new(&with_ext).is_file()
+            })
     }
 }
 
-/// For tests: a temp dir with an executable `tool` and a plain file `data`.
+/// For tests: what an executable's file name ends with here.
+#[cfg(test)]
+pub const EXE: &str = if cfg!(windows) { ".cmd" } else { "" };
+
+/// For tests: a temp dir with an executable `tool` (`tool.cmd` on Windows)
+/// and a plain file `data`.
 #[cfg(test)]
 pub fn fixture(name: &str) -> PathBuf {
     let dir = env::temp_dir().join(format!("shellsync-probe-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("tool"), "#!/bin/sh\n").unwrap();
+    std::fs::write(dir.join(format!("tool{EXE}")), "#!/bin/sh\n").unwrap();
     std::fs::write(dir.join("data"), "").unwrap();
     #[cfg(unix)]
     {

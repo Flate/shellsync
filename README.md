@@ -33,13 +33,23 @@ install -m 755 shellsync-aarch64-apple-darwin ~/.local/bin/shellsync
 shellsync install
 ```
 
-Releases have binaries for Linux x86_64 (static, any distribution) and macOS
-on Apple silicon. To build it yourself instead, run `cargo install --path .`, or `cargo build --release` and copy
-`target/release/shellsync` onto your PATH.
+On Windows, in PowerShell:
+
+```powershell
+(Get-FileHash shellsync-x86_64-pc-windows-msvc.exe).Hash   # compare with SHA256SUMS
+Copy-Item shellsync-x86_64-pc-windows-msvc.exe <a directory on your PATH>\shellsync.exe
+shellsync install
+```
+
+Releases have binaries for Linux x86_64 (static, any distribution), macOS on
+Apple silicon and Windows x86_64 (no Visual C++ runtime needed). To build it
+yourself instead, run `cargo install --path .`, or `cargo build --release` and
+copy `target/release/shellsync` onto your PATH.
 
 `install` creates a starter config if you don't have one, builds it, and adds a
-small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`)
-to nushell's `env.nu` and `config.nu`, and to PowerShell's `profile.ps1`.
+small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`;
+not on Windows), to nushell's `env.nu` and `config.nu`, and to PowerShell's
+`profile.ps1`.
 Running it again is safe: the block
 is replaced, not duplicated. Paths under your home directory are written as
 `$HOME/...` or `~/...`, so the hooks still work if you sync your dotfiles to a
@@ -109,7 +119,17 @@ passes its arguments on: `gs = "git status"` becomes
 `gc` or `gp`, is removed so that the function takes effect. The hook and the
 generated code use .NET calls instead of cmdlets such as `Test-Path`, because
 the first use of a cmdlet loads its module, which would add about 100 ms to
-every start. Windows isn't supported yet.
+every start.
+
+**Windows**: nushell and PowerShell are supported; zsh isn't a Windows shell,
+so `install` leaves it out there. shellsync's own files are where they are on
+other systems, under your user profile: `.config\shellsync\config.toml` and
+`.cache\shellsync\`. They get the profile folder's permissions (you,
+administrators and the system) instead of mode 0600. `install` asks
+PowerShell where its profile is, since Documents may have moved, to OneDrive
+for example. Commands in `[tool]` checks are found the way the shells find
+them, through PATHEXT: `command = "eza"` matches `eza.exe`. `edit` starts the
+editor through `cmd`, Notepad if `VISUAL` and `EDITOR` aren't set.
 
 ## Config reference
 
@@ -272,8 +292,9 @@ SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 ```
 
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
-`cargo clippy`, then the tests on Linux (zsh, and pinned nushell and
-PowerShell releases) and on a
+`cargo clippy` (also for the Windows target), then the tests on Linux (zsh,
+and pinned nushell and PowerShell releases), on a Windows runner tagged
+`windows`, and on a
 macOS runner tagged `macos`.
 
 To release a version:

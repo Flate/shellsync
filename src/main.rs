@@ -77,8 +77,11 @@ impl Paths {
     }
 }
 
+/// The home directory, as the shells see it: on Windows the user profile
+/// (PowerShell's `$HOME`; nushell asks Windows for the same folder).
 fn home() -> PathBuf {
-    env::var_os("HOME")
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    env::var_os(var)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -133,13 +136,7 @@ fn run(args: Vec<String>) -> Result {
         }
     }
 
-    let absolute = |p: PathBuf| {
-        if p.is_absolute() {
-            p
-        } else {
-            env::current_dir().unwrap_or_default().join(p)
-        }
-    };
+    let absolute = |p: PathBuf| std::path::absolute(&p).unwrap_or(p);
     let paths = Paths {
         config: absolute(
             config.unwrap_or_else(|| match env::var_os("SHELLSYNC_CONFIG") {
@@ -496,6 +493,7 @@ impl TempDir {
         let dir = env::temp_dir().join(format!("shellsync-{}", std::process::id()));
         // A leftover from an earlier process with the same id.
         let _ = fs::remove_dir_all(&dir);
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -517,21 +515,45 @@ fn edit(paths: &Paths) -> Result {
     let editor = ["VISUAL", "EDITOR"]
         .iter()
         .find_map(|v| env::var(v).ok().filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| "vi".into());
-    // Run through sh so EDITOR values with arguments ("code --wait") work.
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(format!("{editor} \"$1\""))
-        .arg("sh")
-        .arg(&paths.config)
+        .unwrap_or_else(|| if cfg!(windows) { "notepad" } else { "vi" }.into());
+    let status = editor_command(&editor, &paths.config)
         .status()
         .map_err(|e| format!("running {editor}: {e}"))?;
     if !status.success() {
         return Err(format!("{editor} exited with {status}"));
     }
     build(paths, false, None)?;
-    println!("Rebuilt. New shells pick up the changes; in zsh you can also run `exec zsh`.");
+    let zsh_hint = if cfg!(windows) {
+        ""
+    } else {
+        "; in zsh you can also run `exec zsh`"
+    };
+    println!("Rebuilt. New shells pick up the changes{zsh_hint}.");
     Ok(())
+}
+
+/// Runs `editor` through the system shell, so values with arguments
+/// (`code --wait`) work.
+#[cfg(unix)]
+fn editor_command(editor: &str, file: &Path) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(file);
+    c
+}
+
+/// `cmd /S /C "<editor> "<file>""`: with /S, cmd drops the outer quotes and
+/// runs the rest as typed. Passed raw, since cmd doesn't parse arguments the
+/// way Rust quotes them. Windows paths can't contain `"`.
+#[cfg(windows)]
+fn editor_command(editor: &str, file: &Path) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = Command::new("cmd");
+    c.args(["/S", "/C"])
+        .raw_arg(format!("\"{editor} \"{}\"\"", file.display()));
+    c
 }
 
 fn ensure_config(paths: &Paths) -> Result<bool> {
@@ -586,11 +608,10 @@ fn uninstall() -> Result {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn outputs_are_private_to_the_user() {
         use std::os::unix::fs::PermissionsExt;

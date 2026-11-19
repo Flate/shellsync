@@ -17,11 +17,37 @@ pub struct Pwsh;
 
 /// Helpers for the `[tool]` checks, defined before the first one and removed
 /// after the last. (`Get-Command` would also take about 9 ms per lookup, and
-/// doesn't check that a file can run.)
-const HELPERS: &str = "\
+/// doesn't check that a file can run.) The files are generated on the machine
+/// that runs them, so the helpers can differ per platform: a file can run if
+/// it has an execute bit, or on Windows an extension from PATHEXT (with or
+/// without it in the name), as for `Probe`.
+const HELPERS: &str = if cfg!(windows) {
+    HELPERS_WINDOWS
+} else {
+    HELPERS_UNIX
+};
+
+const HELPERS_UNIX: &str = "\
 $__shellsync_executable = {
   param($path)
   [IO.File]::Exists($path) -and (([int][IO.File]::GetUnixFileMode($path) -band 73) -ne 0)
+}
+$__shellsync_command = {
+  param($name)
+  foreach ($dir in $env:PATH -split [IO.Path]::PathSeparator) {
+    if ($dir -and (& $__shellsync_executable ([IO.Path]::Join($dir, $name)))) { return $true }
+  }
+  $false
+}
+";
+
+const HELPERS_WINDOWS: &str = "\
+$__shellsync_executable = {
+  param($path)
+  $exts = $env:PATHEXT -split ';' -ne ''
+  if ([IO.Path]::GetExtension($path) -in $exts -and [IO.File]::Exists($path)) { return $true }
+  foreach ($ext in $exts) { if ([IO.File]::Exists($path + $ext)) { return $true } }
+  $false
 }
 $__shellsync_command = {
   param($name)
@@ -43,7 +69,7 @@ impl Dialect for Pwsh {
     }
 
     /// The first occurrence of a directory is kept, so prepended entries
-    /// move to the front.
+    /// move to the front. Paths are case-insensitive on Windows.
     fn path(prepend: &[&str], append: &[&str]) -> String {
         let list = |l: &[&str]| {
             let words: Vec<String> = l.iter().map(|p| template_word(p)).collect();
@@ -58,8 +84,9 @@ impl Dialect for Pwsh {
             parts.push(list(append));
         }
         format!(
-            "$env:PATH = & {{ $path = @(); foreach ($dir in {}) {{ if ($dir -and $path -cnotcontains $dir) {{ $path += $dir }} }}; $path -join [IO.Path]::PathSeparator }}\n",
-            parts.join(" + ")
+            "$env:PATH = & {{ $path = @(); foreach ($dir in {}) {{ if ($dir -and $path -{}notcontains $dir) {{ $path += $dir }} }}; $path -join [IO.Path]::PathSeparator }}\n",
+            parts.join(" + "),
+            if cfg!(windows) { "i" } else { "c" }
         )
     }
 
@@ -168,10 +195,31 @@ pub fn profile_hook(paths: &Paths, exe: &Path, home: &Path) -> String {
     )
 }
 
-/// The profile for all hosts (the terminal, editors), where PowerShell looks
-/// for it on Unix.
+/// The profile for all hosts (the terminal, editors). On Windows it is in
+/// Documents, which may have moved (to OneDrive, say), so PowerShell is asked.
 pub fn profile_file() -> PathBuf {
+    if cfg!(windows) {
+        if let Some(file) = ask_pwsh() {
+            return file;
+        }
+        return crate::home().join(r"Documents\PowerShell\profile.ps1");
+    }
     crate::xdg("XDG_CONFIG_HOME", ".config").join("powershell/profile.ps1")
+}
+
+fn ask_pwsh() -> Option<PathBuf> {
+    let out = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$PROFILE.CurrentUserAllHosts",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let file = String::from_utf8(out.stdout).ok()?;
+    Some(PathBuf::from(file.trim())).filter(|f| !f.as_os_str().is_empty())
 }
 
 /// Parses with PowerShell's own parser and prints each error as
@@ -240,11 +288,19 @@ mod tests {
             [pwsh]
             init = "Set-PSReadLineOption -EditMode Emacs"
         "#;
+        let op = if cfg!(windows) {
+            "-inotcontains"
+        } else {
+            "-cnotcontains"
+        };
+        let path = format!(
+            r#"$env:PATH = & {{ $path = @(); foreach ($dir in @("${{env:GOPATH}}/bin") + ($env:PATH -split [IO.Path]::PathSeparator) + @("/opt/bin")) {{ if ($dir -and $path {op} $dir) {{ $path += $dir }} }}; $path -join [IO.Path]::PathSeparator }}"#
+        );
         assert_eq!(
             render(cfg),
             [
                 r#"$env:GOPATH = "${HOME}/go""#,
-                r#"$env:PATH = & { $path = @(); foreach ($dir in @("${env:GOPATH}/bin") + ($env:PATH -split [IO.Path]::PathSeparator) + @("/opt/bin")) { if ($dir -and $path -cnotcontains $dir) { $path += $dir } }; $path -join [IO.Path]::PathSeparator }"#,
+                &path,
                 r"if (${alias:g}) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\g', $false, $true, $true) }",
                 "function g { git @args }",
                 "",

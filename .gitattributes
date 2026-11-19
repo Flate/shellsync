@@ -1,0 +1,3 @@
+# LF everywhere, also in checkouts on Windows: include_str! and the tests
+# compare file contents byte for byte.
+* text=auto eol=lf

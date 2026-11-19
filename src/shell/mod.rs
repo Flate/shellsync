@@ -370,9 +370,10 @@ fn values(list: &[Value], shell: Shell) -> Vec<&str> {
 
 /// `p` relative to `home`, if it is inside it. With home `/` every path
 /// would be inside, so none is.
+/// Separated by `/`, which the shells also take on Windows.
 pub fn home_relative(p: &Path, home: &Path) -> Option<String> {
     let rel = p.strip_prefix(home).ok()?.to_str()?;
-    (home != Path::new("/") && !rel.is_empty()).then(|| rel.to_string())
+    (home != Path::new("/") && !rel.is_empty()).then(|| rel.replace(std::path::MAIN_SEPARATOR, "/"))
 }
 
 /// For tests: each generated file without its header, with no environment
