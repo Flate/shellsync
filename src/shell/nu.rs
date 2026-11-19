@@ -11,6 +11,9 @@ use crate::template::{self, Seg};
 
 pub struct Nu;
 
+/// The file `tools_check` writes, next to the other generated files.
+pub const TOOLS_FILE: &str = "tools.nu";
+
 impl Dialect for Nu {
     fn env(name: &str, value: &str) -> String {
         format!("$env.{name} = {}\n", template_expr(value))
@@ -35,6 +38,12 @@ impl Dialect for Nu {
 
     fn alias(name: &str, body: &str) -> String {
         format!("alias {name} = {}\n", body.trim())
+    }
+
+    /// nushell parses the body as part of the `alias` command, which also
+    /// restricts what it may be (a command call, not a pipeline).
+    fn alias_snippet(name: &str, body: &str) -> (String, bool) {
+        (Self::alias(name, body), true)
     }
 
     /// nushell defines aliases while parsing, so an alias inside a runtime
@@ -182,6 +191,21 @@ pub fn config_files() -> (PathBuf, PathBuf) {
         };
         (dir.join("env.nu"), dir.join("config.nu"))
     })
+}
+
+/// `nu-check` prints the parse error itself; the error it then raises only
+/// says that parsing failed, so it is replaced by the exit status.
+pub fn syntax_check(file: &str) -> Command {
+    let mut c = Command::new("nu");
+    c.args([
+        "-n",
+        "-c",
+        &format!(
+            "try {{ nu-check --debug {} }} catch {{ exit 1 }}",
+            quote(file)
+        ),
+    ]);
+    c
 }
 
 /// Asks nushell itself; it knows about XDG_CONFIG_HOME and platform defaults.

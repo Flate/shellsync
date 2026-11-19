@@ -197,7 +197,7 @@ shells get them.
 shellsync install        set up hooks (creates the config if missing)
 shellsync uninstall      remove hooks
 shellsync edit           open the config in $VISUAL/$EDITOR, then rebuild
-shellsync check          validate the config
+shellsync check          validate the config and parse the generated code
 shellsync print zsh|nu   show the generated code
 shellsync hook zshenv|zshrc|nu-env|nu-config   print a hook block, for manual setup
 shellsync paths          show the files involved
@@ -209,6 +209,16 @@ also be set with `$SHELLSYNC_CONFIG`, and `$XDG_CONFIG_HOME` and
 `$XDG_CACHE_HOME` are respected. `install` and `hook` write the resolved paths
 into the hooks, so later changes to those variables don't affect existing
 hooks. `--exe FILE` sets the binary the hooks run (default: the running one).
+
+**`check`** also hands the generated code to zsh (`zsh -n`) and nushell
+(`nu-check`) to parse, without running it, so a typo in an alias or init
+block shows up before a shell trips over it. In nushell, a line that doesn't
+parse stops the whole config from loading, and some aliases that work in zsh
+don't parse there: nushell can't alias a pipeline (`ls -l | sort`). Errors
+name the config key they come from, such as `aliases.ll` or
+`tool.fzf.zsh.init`. Every `[tool]` table is checked, whether the tool is
+installed or not. A shell that isn't installed is skipped. `build` and the
+hooks don't run this check: run `shellsync check` after editing the config.
 
 ## Notes
 

@@ -3,6 +3,7 @@
 use std::env;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::{Dialect, home_relative};
 use crate::Paths;
@@ -26,6 +27,11 @@ impl Dialect for Zsh {
 
     fn alias(name: &str, body: &str) -> String {
         format!("alias -- {name}={}\n", quote(body))
+    }
+
+    /// zsh parses an alias's body only where the alias is used.
+    fn alias_snippet(_: &str, body: &str) -> (String, bool) {
+        (body.to_string(), false)
     }
 
     /// Builtins only, so startup spawns no process. `whence -p` searches PATH
@@ -76,6 +82,13 @@ fn path_word(p: &Path, home: &Path) -> String {
         Some(rel) => template_word(&format!("~/{}", rel.replace('$', "$$"))),
         None => quote(&p.display().to_string()),
     }
+}
+
+/// `-n` parses without running; `-f` skips the user's startup files.
+pub fn syntax_check(file: &str) -> Command {
+    let mut c = Command::new("zsh");
+    c.args(["-f", "-n", file]);
+    c
 }
 
 /// The hook body for `.zshenv`, which every zsh reads, also scripts. Only

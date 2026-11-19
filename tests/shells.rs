@@ -354,6 +354,101 @@ fn shell(shell: &str, home: &Path, code: &str) -> (String, String) {
     )
 }
 
+/// Runs `shellsync check` on `config` with `path` as PATH; returns
+/// (success, stdout, stderr).
+fn check(home: &Path, config: &str, path: &str) -> (bool, String, String) {
+    let file = home.join("check.toml");
+    fs::write(&file, config).unwrap();
+    let out = cmd(BIN, home)
+        .env("PATH", path)
+        .args(["check", "--config"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn check_parses_the_code_with_each_shell() {
+    if !has("zsh") || !has("nu") {
+        eprintln!("zsh or nu not installed, skipping");
+        return;
+    }
+    let home = temp_home();
+    let path = std::env::var("PATH").unwrap_or_default();
+
+    let broken = r#"
+[aliases]
+ok = "echo ok"
+quote = { zsh = "echo 'open", nu = "echo ok" }
+piped = "ls | sort"
+
+# Not installed anywhere, but checked all the same.
+[tool.c]
+exists = "/shellsync/does/not/exist"
+zsh.init = """
+if true; then
+  echo x
+"""
+"#;
+    let (ok, out, err) = check(&home, broken, &path);
+    assert!(!ok);
+    assert_eq!(err, "shellsync: 3 parse errors\n");
+    assert!(
+        out.contains("\nzsh: 2 errors\n  aliases.quote:1: "),
+        "{out}"
+    );
+    assert!(out.contains("\n  tool.c.zsh.init:3: parse error"), "{out}");
+    assert!(out.contains("\nnu: 1 error\n  aliases.piped:\n"), "{out}");
+    assert!(out.contains("Can't create alias to expression"), "{out}");
+
+    // Parses only after the earlier block, as it does in the generated file.
+    let in_context = r#"
+[tool.a]
+exists = "/"
+nu.init = "let shared = 1"
+[tool.b]
+exists = "/"
+nu.init = "print $shared"
+"#;
+    for config in [in_context, CONFIG] {
+        let (ok, out, err) = check(&home, config, &path);
+        assert!(ok, "{out}{err}");
+        assert!(out.ends_with("\nzsh: ok\nnu: ok\n"), "{out}");
+    }
+    fs::remove_dir_all(&home).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn check_skips_shells_that_are_not_installed() {
+    if !has("zsh") {
+        eprintln!("zsh not installed, skipping");
+        return;
+    }
+    let home = temp_home();
+    let zsh = run({
+        let mut c = cmd("sh", &home);
+        c.args(["-c", "command -v zsh"]);
+        c
+    });
+    let bin = home.join("bin");
+    fs::create_dir(&bin).unwrap();
+    std::os::unix::fs::symlink(zsh.trim(), bin.join("zsh")).unwrap();
+
+    let (ok, out, err) = check(&home, CONFIG, bin.to_str().unwrap());
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.ends_with("\nzsh: ok\nnu: not installed, not checked\n"),
+        "{out}"
+    );
+    fs::remove_dir_all(&home).unwrap();
+}
+
 #[test]
 fn edits_are_picked_up_and_errors_keep_last_good_config() {
     for (sh, print) in [("zsh", "print -r -- $GOPATH"), ("nu", "print $env.GOPATH")] {

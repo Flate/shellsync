@@ -5,6 +5,7 @@ pub mod nu;
 pub mod zsh;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::config::{Condition, Config, Entries, Tool, Value};
 use crate::probe::Probe;
@@ -42,6 +43,15 @@ impl Shell {
         match s {
             "nushell" => Some(Shell::Nu),
             _ => Shell::named(s),
+        }
+    }
+
+    /// A command that parses `file` with this shell without running it. It
+    /// fails, with the shell's error message on stderr, if `file` doesn't parse.
+    pub fn syntax_check(self, file: &str) -> Command {
+        match self {
+            Shell::Zsh => zsh::syntax_check(file),
+            Shell::Nu => nu::syntax_check(file),
         }
     }
 
@@ -90,6 +100,9 @@ trait Dialect {
     fn env(name: &str, value: &str) -> String;
     fn path(prepend: &[&str], append: &[&str]) -> String;
     fn alias(name: &str, body: &str) -> String;
+    /// Code that parses the way an alias's body does, for `check`, and
+    /// whether parsing the generated file parses the body too.
+    fn alias_snippet(name: &str, body: &str) -> (String, bool);
     /// The lines that open and close a block that applies only if all
     /// `conditions` hold when the shell starts. None if the shell can't check
     /// them at startup; the build then decides, see [`Checks`].
@@ -118,6 +131,55 @@ pub fn render(cfg: &Config, shell: Shell, source: &str, checks: &Checks) -> Rend
         Shell::Zsh => render_with::<zsh::Zsh>(cfg, shell, source, checks),
         Shell::Nu => render_with::<nu::Nu>(cfg, shell, source, checks),
     }
+}
+
+/// A piece of raw shell code from the config, for `check`.
+#[derive(Debug, PartialEq)]
+pub struct Snippet {
+    /// The config key it comes from, such as `aliases.ll` or `tool.fzf.sh.init`.
+    pub key: String,
+    pub code: String,
+    /// Whether parsing the generated files parses this code too.
+    pub in_files: bool,
+}
+
+/// The alias bodies and init blocks that apply to `shell`, in file order.
+pub fn snippets(cfg: &Config, shell: Shell) -> Vec<Snippet> {
+    match shell {
+        Shell::Zsh => snippets_with::<zsh::Zsh>(cfg, shell),
+        Shell::Nu => snippets_with::<nu::Nu>(cfg, shell),
+    }
+}
+
+fn snippets_with<D: Dialect>(cfg: &Config, shell: Shell) -> Vec<Snippet> {
+    let tables = std::iter::once((String::new(), &cfg.entries)).chain(
+        cfg.tools
+            .iter()
+            .map(|t| (format!("tool.{}.", t.name), &t.entries)),
+    );
+    let mut out = Vec::new();
+    for (prefix, entries) in tables {
+        for (name, v) in &entries.aliases {
+            if let Some(body) = v.get(shell) {
+                let (code, in_files) = D::alias_snippet(name, body);
+                out.push(Snippet {
+                    key: format!("{prefix}aliases.{name}"),
+                    code,
+                    in_files,
+                });
+            }
+        }
+        for (target, code) in &entries.init_blocks {
+            if target.covers(shell) && !code.trim().is_empty() {
+                out.push(Snippet {
+                    key: format!("{prefix}{}.init", target.name()),
+                    code: code.clone(),
+                    in_files: true,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// How a tool's block is written.
@@ -316,6 +378,52 @@ mod tests {
                 assert_eq!(body, "", "{name}");
             }
         }
+    }
+
+    #[test]
+    fn snippets_name_their_config_keys() {
+        let cfg = Config::parse(
+            r#"
+            [aliases]
+            g = "git"
+            ll = { sh = "ls -l", nu = "ls" }
+            [sh]
+            init = "shared"
+            [zsh]
+            init = "zsh only"
+            [nu]
+            init = "  "
+            [tool.fzf]
+            aliases.f = { nu = "fzf" }
+            nu.init = "nu init"
+            "#,
+        )
+        .unwrap();
+        let keys = |shell| -> Vec<(String, String, bool)> {
+            snippets(&cfg, shell)
+                .into_iter()
+                .map(|s| (s.key, s.code, s.in_files))
+                .collect()
+        };
+        let s = |k: &str, c: &str, f| (k.to_string(), c.to_string(), f);
+        assert_eq!(
+            keys(Shell::Zsh),
+            [
+                s("aliases.g", "git", false),
+                s("aliases.ll", "ls -l", false),
+                s("sh.init", "shared", true),
+                s("zsh.init", "zsh only", true),
+            ]
+        );
+        assert_eq!(
+            keys(Shell::Nu),
+            [
+                s("aliases.g", "alias g = git\n", true),
+                s("aliases.ll", "alias ll = ls\n", true),
+                s("tool.fzf.aliases.f", "alias f = fzf\n", true),
+                s("tool.fzf.nu.init", "nu init", true),
+            ]
+        );
     }
 
     #[test]

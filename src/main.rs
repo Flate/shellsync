@@ -8,10 +8,10 @@ use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 use std::time::SystemTime;
 
-use config::{Config, Entries};
+use config::{Condition, Config, Entries};
 use hooks::HookFile;
 use probe::Probe;
 use shell::{Checks, Shell};
@@ -27,7 +27,8 @@ Commands:
   uninstall        Remove the hooks (config and cache are kept)
   edit             Open the config in $VISUAL / $EDITOR, then rebuild
   build            Regenerate the shell files (shells do this automatically)
-  check            Validate the config
+  check            Validate the config, and parse the generated code with
+                   zsh and nushell (where installed)
   print <shell>    Print the generated code for zsh or nu
   hook <file>      Print the hook for zshenv, zshrc, nu-env or nu-config
   paths            Show the files shellsync reads and writes
@@ -71,7 +72,7 @@ impl Paths {
 
     /// nushell's `[tool]` checks, see `shell::nu::tools_check`.
     fn nu_tools(&self) -> PathBuf {
-        self.out_dir.join("tools.nu")
+        self.output(shell::nu::TOOLS_FILE)
     }
 }
 
@@ -266,6 +267,26 @@ fn private_file(path: &Path) -> io::Result<fs::File> {
     options.open(path)
 }
 
+/// Every generated file: each shell's files, then nushell's tool checks.
+fn generate(cfg: &Config, source: &str, checks: &Checks) -> Vec<(Shell, &'static str, String)> {
+    let mut files = Vec::new();
+    let mut nu_applied = Vec::new();
+    for shell in Shell::ALL {
+        let out = shell::render(cfg, shell, source, checks);
+        files.extend(
+            out.files
+                .into_iter()
+                .map(|(name, text)| (shell, name, text)),
+        );
+        if shell == Shell::Nu {
+            nu_applied = out.applied;
+        }
+    }
+    let tools = shell::nu::tools_check(cfg, &nu_applied);
+    files.push((Shell::Nu, shell::nu::TOOLS_FILE, tools));
+    files
+}
+
 /// Regenerates the outputs. Returns whether anything was written.
 /// `nu_tools` are the `[tool]` tables nushell found when it started; without
 /// it, conditions are checked in this process's environment.
@@ -287,21 +308,9 @@ fn build(paths: &Paths, if_stale: bool, nu_tools: Option<&[String]>) -> Result<b
         Some(found) => Checks::Found(found),
         None => Checks::Now(&probe),
     };
-    let mut nu_applied = Vec::new();
-    for shell in Shell::ALL {
-        let out = shell::render(&cfg, shell, &source, &checks);
-        for (name, text) in &out.files {
-            write_atomic(&paths.output(name), text, stamp)?;
-        }
-        if shell == Shell::Nu {
-            nu_applied = out.applied;
-        }
+    for (_, name, text) in generate(&cfg, &source, &checks) {
+        write_atomic(&paths.output(name), &text, stamp)?;
     }
-    write_atomic(
-        &paths.nu_tools(),
-        &shell::nu::tools_check(&cfg, &nu_applied),
-        stamp,
-    )?;
     Ok(true)
 }
 
@@ -318,14 +327,137 @@ fn check(paths: &Paths) -> Result {
         .collect();
     let count = |f: fn(&Entries) -> usize| all.iter().map(|e| f(e)).sum::<usize>();
     println!(
-        "{}: ok ({} env vars, {} path entries, {} aliases, {} tools)",
+        "{}: {} env vars, {} path entries, {} aliases, {} tools",
         paths.config.display(),
         count(|e| e.env.len()),
         count(|e| e.path_prepend.len() + e.path_append.len()),
         count(|e| e.aliases.len()),
         cfg.tools.len()
     );
-    Ok(())
+
+    let dir = TempDir::new("check")?;
+    // As if every tool applied, so all of them are checked, installed here or not.
+    let all: Vec<String> = cfg.tools.iter().map(|t| t.name.clone()).collect();
+    let files = generate(&cfg, "check", &Checks::Found(&all));
+    let mut errors = 0;
+    for shell in Shell::ALL {
+        let files: Vec<_> = files
+            .iter()
+            .filter(|(s, ..)| *s == shell)
+            .map(|(_, name, text)| (*name, text.as_str()))
+            .collect();
+        errors += check_shell(&cfg, shell, &files, &dir.0)?;
+    }
+    match errors {
+        0 => Ok(()),
+        1 => Err("1 parse error".into()),
+        n => Err(format!("{n} parse errors")),
+    }
+}
+
+/// Parses `code` with `shell`, from a file named `name` in `dir`. Returns the
+/// shell's error message if it doesn't parse.
+fn parse(shell: Shell, dir: &Path, name: &str, code: &str) -> Result<Option<String>> {
+    write_atomic(&dir.join(name), code, None)?;
+    let out = shell
+        .syntax_check(name)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("running {}: {e}", shell.name()))?;
+    if out.status.success() {
+        return Ok(None);
+    }
+    let msg = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
+    Ok(Some(if msg.is_empty() {
+        out.status.to_string()
+    } else {
+        msg
+    }))
+}
+
+/// Parses the files generated for `shell` and the config's raw code for it
+/// with the shell itself, and prints the result. Returns the number of errors.
+///
+/// Errors are reported by config key where possible: if a generated file
+/// doesn't parse, each alias and init block is parsed on its own to find the
+/// culprit. Code that only parses in context (a nushell variable from an
+/// earlier block) is then reported too.
+fn check_shell(cfg: &Config, shell: Shell, files: &[(&str, &str)], dir: &Path) -> Result<usize> {
+    let sh = shell.name();
+    // Looked up here: on Linux, running a missing program can fail like a
+    // program that exits with 127, not with "not found".
+    let probe = Probe::from_env();
+    if !probe.holds(&Condition::Command(sh.into()), &probe.path_dirs()) {
+        println!("{sh}: not installed, not checked");
+        return Ok(0);
+    }
+    let mut file_errors = Vec::new();
+    for (name, text) in files {
+        if let Some(msg) = parse(shell, dir, name, text)? {
+            file_errors.push((
+                format!("{name} (generated, see `shellsync print {sh}`)"),
+                msg,
+            ));
+        }
+    }
+    let mut errors = Vec::new();
+    let mut explained = false;
+    for (i, snippet) in shell::snippets(cfg, shell).into_iter().enumerate() {
+        if snippet.in_files && file_errors.is_empty() {
+            continue;
+        }
+        let name = format!("snippet-{i}.{sh}");
+        if let Some(msg) = parse(shell, dir, &name, &snippet.code)? {
+            explained |= snippet.in_files;
+            errors.push((snippet.key.clone(), msg.replace(&name, &snippet.key)));
+        }
+    }
+    if !explained {
+        errors.extend(file_errors);
+    }
+
+    match errors.len() {
+        0 => println!("{sh}: ok"),
+        1 => println!("{sh}: 1 error"),
+        n => println!("{sh}: {n} errors"),
+    }
+    for (what, msg) in &errors {
+        // zsh's messages start with the file name, which is the key already.
+        if msg.starts_with(what.as_str()) {
+            println!("  {msg}");
+            continue;
+        }
+        println!("  {what}:");
+        for line in msg.lines() {
+            println!("    {line}");
+        }
+    }
+    Ok(errors.len())
+}
+
+/// A directory only the user can read, removed when dropped.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Result<TempDir> {
+        let dir = env::temp_dir().join(format!("shellsync-{name}-{}", std::process::id()));
+        // A leftover from an earlier process with the same id.
+        let _ = fs::remove_dir_all(&dir);
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&dir)
+            .map_err(|e| format!("creating {}: {e}", dir.display()))?;
+        Ok(TempDir(dir))
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 fn edit(paths: &Paths) -> Result {

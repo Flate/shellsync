@@ -34,7 +34,15 @@ impl Target {
         names
     }
 
-    fn covers(self, shell: Shell) -> bool {
+    /// The key in the config file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Target::Sh => "sh",
+            Target::Shell(s) => s.name(),
+        }
+    }
+
+    pub fn covers(self, shell: Shell) -> bool {
         match self {
             Target::Sh => shell.is_sh(),
             Target::Shell(s) => s == shell,
