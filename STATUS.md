@@ -10,17 +10,16 @@
 
 ## In progress
 
-Improvement plan, steps 1–9 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup, `.zshenv`/`.zshrc` split and `--exe`, release builds).
+Improvement plan, steps 1–10 of 13 done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup, `.zshenv`/`.zshrc` split and `--exe`, release builds, `check` parses with each shell).
 
 ## Known issues
 
-- None known
+- Only `check` parses the shell code: `build`/`edit` write an alias or init block that doesn't parse, and in nushell that stops the whole config from loading
 
 ## Next steps
 
-1. `check` validates the output with each shell's parser
-2. PowerShell 7 (not Windows PowerShell), Windows (including a Windows release binary), bash
-3. Dotfiles: shellsync config template and hook blocks (via `hook --exe`) in the chezmoi repo
+1. PowerShell 7 (not Windows PowerShell), Windows (including a Windows release binary), bash
+2. Dotfiles: shellsync config template and hook blocks (via `hook --exe`) in the chezmoi repo
 
 ## Constraints
 
