@@ -108,7 +108,7 @@ test:macos:
   script:
     - cargo build --release --locked --target "$TARGET"
     - mkdir -p dist
-    - cp "target/$TARGET/release/shellsync$EXE" "dist/shellsync-$TARGET$EXE"
+    - cp "target/$TARGET/release/shellsync" "dist/shellsync-$TARGET"
   artifacts:
     paths:
       - dist/
@@ -128,19 +128,7 @@ build:linux:
   extends: [.rust, .build]
   variables:
     TARGET: x86_64-unknown-linux-musl
-    EXE: ""
   before_script:
-    - rustup target add "$TARGET"
-
-build:windows:
-  extends: [.rust, .build]
-  variables:
-    TARGET: x86_64-pc-windows-gnu
-    EXE: .exe
-    DEBIAN_FRONTEND: noninteractive
-  before_script:
-    - apt-get update
-    - apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
     - rustup target add "$TARGET"
 
 # Homebrew's Rust, like test:macos (not pinned).
@@ -150,7 +138,6 @@ build:macos:
     - macos
   variables:
     TARGET: aarch64-apple-darwin
-    EXE: ""
   before_script:
     - export PATH="/opt/homebrew/bin:$PATH"
     - cargo --version
@@ -159,7 +146,7 @@ release:
   extends: [.rust, .release]
   stage: release
   cache: []
-  needs: [build:linux, build:macos, build:windows]
+  needs: [build:linux, build:macos]
   variables:
     DEBIAN_FRONTEND: noninteractive
   script:

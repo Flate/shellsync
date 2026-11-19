@@ -13,7 +13,6 @@ set -euo pipefail
 FILES=(
     shellsync-x86_64-unknown-linux-musl
     shellsync-aarch64-apple-darwin
-    shellsync-x86_64-pc-windows-gnu.exe
 )
 
 die() {

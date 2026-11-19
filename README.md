@@ -33,10 +33,8 @@ install -m 755 shellsync-aarch64-apple-darwin ~/.local/bin/shellsync
 shellsync install
 ```
 
-Releases have binaries for Linux x86_64 (static, any distribution), macOS on
-Apple silicon and Windows x86_64. The Windows binary is built ahead of Windows
-support: shellsync doesn't support Windows yet. To build it yourself instead,
-run `cargo install --path .`, or `cargo build --release` and copy
+Releases have binaries for Linux x86_64 (static, any distribution) and macOS
+on Apple silicon. To build it yourself instead, run `cargo install --path .`, or `cargo build --release` and copy
 `target/release/shellsync` onto your PATH.
 
 `install` creates a starter config if you don't have one, builds it, and adds a
