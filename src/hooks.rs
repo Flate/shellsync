@@ -175,7 +175,11 @@ mod tests {
         );
         let nu_env = HookFile::NuEnv.block(&paths, exe, home);
         assert!(nu_env.contains("let exe = ('~/.cargo/bin/shellsync' | path expand)"));
-        assert!(nu_env.contains("try { ^$exe build"));
+        assert!(nu_env.contains("try { ^$exe build --config $cfg --out-dir $dir }"));
+        assert!(nu_env.contains(
+            "source (if ('~/.cache/shellsync/tools.nu' | path exists) { '~/.cache/shellsync/tools.nu' } else { null })"
+        ));
+        assert!(nu_env.contains("--nu-tools ...$tools.found"));
         assert_eq!(
             HookFile::NuConfig.block(&paths, exe, home),
             format!(

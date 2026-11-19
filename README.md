@@ -42,13 +42,15 @@ in those files as it was.
 * **Startup does almost nothing.** The hooks compare two file timestamps with
   the shell's own builtins (`[[ -nt ]]` in zsh, `ls` in nushell) and then
   `source` a cached file. No extra process starts unless the config has
-  changed. Measured cost: about 2.5 ms for a whole interactive zsh start, and
+  changed (or, for nushell, a [tool](#conditional-entries) was installed or
+  removed). Measured cost: about 2.5 ms for a whole interactive zsh start, and
   about 3.5 ms added to a nushell start.
 * **Rebuilds happen on their own.** When the config's timestamp differs from the
   cached files', the first shell to start runs `shellsync build` (a few
   milliseconds), then loads the result.
 * **Output is plain shell code.** The generated files are in
-  `~/.cache/shellsync/` (`init.zsh`, `init.nu`); `shellsync print zsh` and
+  `~/.cache/shellsync/` (`init.zsh`, `init.nu`, and `tools.nu` for nushell's
+  [tool checks](#conditional-entries)); `shellsync print zsh` and
   `shellsync print nu` show them. Only your user can read them, since the
   config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
@@ -147,12 +149,21 @@ and a check sees PATH as set up by `[path]` and by earlier tools that applied,
 but not by its own `path` entries. To make a directory's commands depend on the
 directory, use `exists`.
 
-**When conditions are checked.** zsh checks them each time a shell starts,
-using builtins only. nushell can't: it defines aliases while it parses its
-config, before anything runs. So for nushell, shellsync checks the conditions
-when it builds the files, and the generated file notes each tool it skipped.
-After installing or removing a tool, run `shellsync build` so nushell picks up
-the change; zsh needs nothing.
+**When conditions are checked.** Both shells check them each time they start,
+so installing or removing a tool takes effect in the next shell. zsh checks
+them in the generated file, using builtins only. nushell defines aliases while
+it parses its config, before anything runs, so an alias can't depend on an
+`if`. Instead, the hook in `env.nu`, which runs first, checks the conditions
+(with nushell's built-in `which`; ten tools add about 0.4 ms) and compares the
+result with the last build. Only if they differ does it run `shellsync build`,
+and the generated file (`init.nu`, which notes each tool it skipped) is ready
+before `config.nu` sources it.
+
+nushell checks with the PATH it has when `env.nu` runs, plus shellsync's own
+`[path]` entries. So if a tool's directory is added to PATH only by your zsh
+startup files, for example Homebrew's `/opt/homebrew/bin` via `brew shellenv`,
+nushell won't find tools there. Add such directories to `[path]`, so both
+shells get them.
 
 ## Commands
 

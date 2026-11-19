@@ -14,7 +14,7 @@ use std::time::SystemTime;
 use config::{Config, Entries};
 use hooks::HookFile;
 use probe::Probe;
-use shell::Shell;
+use shell::{Checks, Shell};
 
 const USAGE: &str = "\
 shellsync - configure zsh and nushell from one file
@@ -37,6 +37,9 @@ Options:
                     ~/.config/shellsync/config.toml]
   --out-dir <dir>   Where generated files go  [default: ~/.cache/shellsync]
   --if-stale        (build) Only rebuild if the config changed
+  --nu-tools [<tool>...]
+                    (build) The [tool] tables whose conditions hold in
+                    nushell; must come last. nushell's hook passes this.
 ";
 
 const EXAMPLE_CONFIG: &str = include_str!("../examples/example.toml");
@@ -51,6 +54,11 @@ struct Paths {
 impl Paths {
     fn output(&self, shell: Shell) -> PathBuf {
         self.out_dir.join(format!("init.{}", shell.name()))
+    }
+
+    /// nushell's `[tool]` checks, see `shell::nu::tools_check`.
+    fn nu_tools(&self) -> PathBuf {
+        self.out_dir.join("tools.nu")
     }
 }
 
@@ -81,6 +89,7 @@ fn run(args: Vec<String>) -> Result {
     let mut config = None;
     let mut out_dir = None;
     let mut if_stale = false;
+    let mut nu_tools = None;
     let mut positional = Vec::new();
 
     let mut it = args.into_iter();
@@ -93,6 +102,7 @@ fn run(args: Vec<String>) -> Result {
                 ))
             }
             "--if-stale" => if_stale = true,
+            "--nu-tools" => nu_tools = Some(it.by_ref().collect::<Vec<_>>()),
             "-h" | "--help" | "help" => {
                 print!("{USAGE}");
                 return Ok(());
@@ -135,7 +145,7 @@ fn run(args: Vec<String>) -> Result {
             print!("{USAGE}");
             Ok(())
         }
-        Some("build") => build(&paths, if_stale).map(|_| ()),
+        Some("build") => build(&paths, if_stale, nu_tools.as_deref()).map(|_| ()),
         Some("check") => check(&paths),
         Some("print") => {
             let shell = shell_arg(&positional)?;
@@ -146,8 +156,9 @@ fn run(args: Vec<String>) -> Result {
                     &cfg,
                     shell,
                     &paths.config.display().to_string(),
-                    &Probe::from_env(),
+                    &Checks::Now(&Probe::from_env()),
                 )
+                .text
             );
             Ok(())
         }
@@ -171,6 +182,7 @@ fn run(args: Vec<String>) -> Result {
                     paths.output(shell).display()
                 );
             }
+            println!("tools.nu    {}", paths.nu_tools().display());
             for (kind, file) in hooks::files() {
                 println!("{:<10} {}", kind.name(), file.display());
             }
@@ -238,11 +250,13 @@ fn private_file(path: &Path) -> io::Result<fs::File> {
     options.open(path)
 }
 
-/// Regenerates both outputs. Returns whether anything was written.
+/// Regenerates the outputs. Returns whether anything was written.
+/// `nu_tools` are the `[tool]` tables nushell found when it started; without
+/// it, conditions are checked in this process's environment.
 ///
 /// On a config error the previous outputs are left untouched, so shells keep
 /// working with the last good config.
-fn build(paths: &Paths, if_stale: bool) -> Result<bool> {
+fn build(paths: &Paths, if_stale: bool, nu_tools: Option<&[String]>) -> Result<bool> {
     if if_stale && !is_stale(paths) {
         return Ok(false);
     }
@@ -253,13 +267,23 @@ fn build(paths: &Paths, if_stale: bool) -> Result<bool> {
         .map_err(|e| format!("creating {}: {e}", paths.out_dir.display()))?;
     let source = paths.config.display().to_string();
     let probe = Probe::from_env();
+    let checks = match nu_tools {
+        Some(found) => Checks::Found(found),
+        None => Checks::Now(&probe),
+    };
+    let mut nu_applied = Vec::new();
     for shell in Shell::ALL {
-        write_atomic(
-            &paths.output(shell),
-            &shell::render(&cfg, shell, &source, &probe),
-            stamp,
-        )?;
+        let out = shell::render(&cfg, shell, &source, &checks);
+        write_atomic(&paths.output(shell), &out.text, stamp)?;
+        if shell == Shell::Nu {
+            nu_applied = out.applied;
+        }
     }
+    write_atomic(
+        &paths.nu_tools(),
+        &shell::nu::tools_check(&cfg, &nu_applied),
+        stamp,
+    )?;
     Ok(true)
 }
 
@@ -303,7 +327,7 @@ fn edit(paths: &Paths) -> Result {
     if !status.success() {
         return Err(format!("{editor} exited with {status}"));
     }
-    build(paths, false)?;
+    build(paths, false, None)?;
     println!("Rebuilt. New shells pick up the changes; in zsh you can also run `exec zsh`.");
     Ok(())
 }
@@ -336,7 +360,7 @@ fn install(paths: &Paths) -> Result {
         )
         .ok();
     }
-    build(paths, false)?;
+    build(paths, false, None)?;
     writeln!(stdout, "built    {}", paths.out_dir.display()).ok();
     let exe = this_exe()?;
     for (kind, file) in hooks::files() {
@@ -383,13 +407,11 @@ mod tests {
         fs::write(&old, "").unwrap();
         fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
 
-        build(&paths, false).unwrap();
-        for shell in Shell::ALL {
-            let mode = fs::metadata(paths.output(shell))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(format!("{:o}", mode & 0o777), "600", "{}", shell.name());
+        build(&paths, false, None).unwrap();
+        let outputs = Shell::ALL.map(|s| paths.output(s));
+        for file in outputs.iter().chain([&paths.nu_tools()]) {
+            let mode = fs::metadata(file).unwrap().permissions().mode();
+            assert_eq!(format!("{:o}", mode & 0o777), "600", "{}", file.display());
         }
         fs::remove_dir_all(&dir).unwrap();
     }

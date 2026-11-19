@@ -1,6 +1,7 @@
 //! Checks `[tool]` conditions while the files are built, for shells that
-//! can't check them at startup: nushell defines aliases while parsing, so an
-//! alias can't depend on a runtime `if`.
+//! can't check them in the generated code: nushell defines aliases while
+//! parsing, so an alias can't depend on a runtime `if`. nushell's env.nu hook
+//! checks again at startup and rebuilds with its own answer if it differs.
 
 use std::env;
 use std::path::{Path, PathBuf};

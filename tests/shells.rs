@@ -181,6 +181,70 @@ fn nu_end_to_end() {
     assert_eq!(lines[7], "yes unset");
 }
 
+/// nushell checks `[tool]` conditions at every start, with its own PATH, and
+/// rebuilds only when the answer differs from the last build: here the build
+/// ran without the tool's directory on PATH, nushell has it.
+#[cfg(unix)]
+#[test]
+fn nu_rechecks_tools_at_startup() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if !has("nu") {
+        eprintln!("nu not installed, skipping");
+        return;
+    }
+    let home = temp_home();
+    run({
+        let mut c = cmd(BIN, &home);
+        c.arg("install");
+        c
+    });
+    fs::write(
+        home.join(".config/shellsync/config.toml"),
+        "[tool.shellsync-fake-tool.aliases]\nfake = \"shellsync-fake-tool\"\n",
+    )
+    .unwrap();
+    let bin = home.join("bin");
+    let tool = bin.join("shellsync-fake-tool");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(&tool, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    run({
+        let mut c = cmd(BIN, &home);
+        c.arg("build");
+        c
+    });
+
+    let nu_path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (env_nu, config_nu) = nu_config_files(&home);
+    let has_alias = || {
+        let mut c = cmd("nu", &home);
+        c.env("PATH", &nu_path)
+            .arg("--env-config")
+            .arg(&env_nu)
+            .arg("--config")
+            .arg(&config_nu)
+            .args(["-c", "print (scope aliases | where name == fake | length)"]);
+        run(c).trim() == "1"
+    };
+    let init = home.join(".cache/shellsync/init.nu");
+    let inode = || fs::metadata(&init).unwrap().ino();
+
+    let built = inode();
+    assert!(has_alias(), "rebuilt in env.nu, before config.nu is parsed");
+    let rebuilt = inode();
+    assert_ne!(rebuilt, built);
+    assert!(has_alias());
+    assert_eq!(inode(), rebuilt, "no rebuild while nothing changed");
+
+    fs::remove_file(&tool).unwrap();
+    assert!(!has_alias(), "a removed tool is noticed");
+}
+
 /// Runs `code` in the given shell with the installed hooks and returns
 /// (stdout, stderr).
 fn shell(shell: &str, home: &Path, code: &str) -> (String, String) {
