@@ -471,6 +471,16 @@ fn windows_bash_end_to_end() {
             continue;
         }
         let sb = Sandbox::installed();
+        // As in CI, where the binary isn't in the user profile: the hook's
+        // paths are all absolute.
+        let block = run({
+            let mut c = sb.cmd(BIN);
+            c.env("USERPROFILE", sb.dir.join("elsewhere"))
+                .args(["hook", "bashrc"]);
+            c
+        });
+        assert!(!block.contains("USERPROFILE"), "{block}");
+        fs::write(sb.dir.join(".bashrc"), block).unwrap();
         let (out, err) = sb.shell(
             bash,
             r#"printf '%s\n' "$HOME" "$GOPATH" "$TRICKY" "$PATH"; alias greet; alias over; alias missing_tool 2>/dev/null || echo no-missing-tool; echo "${FROM_TOOL:-unset} ${NOT_SET:-unset}"; [[ $("$BASH" -i -c 'echo "$PATH"' 2>/dev/null) == "$PATH" ]] && echo same-path"#,

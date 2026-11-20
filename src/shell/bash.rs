@@ -91,12 +91,14 @@ pub fn syntax_check(exe: &Path, file: &str) -> Command {
 /// A path as a bash word in the hook, relative to the home directory where
 /// possible. On Windows that is the user profile, where shellsync's files
 /// are, while bash's `HOME` may be elsewhere (MSYS2 and Cygwin have their
-/// own); bash and the programs it starts take `C:\...` paths as they are,
-/// which Cygwin would not convert from its own form.
+/// own); bash and the programs it starts take Windows paths as they are,
+/// which Cygwin would not convert from its own form. They are written with
+/// `/`: bash looks up a command name without `/` on PATH.
 fn path_word(p: &Path, home: &Path) -> String {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     match home_relative(p, home) {
         Some(rel) => template_word(&format!("${var}/{}", rel.replace('$', "$$"))),
+        None if cfg!(windows) => quote(&p.display().to_string().replace('\\', "/")),
         None => quote(&p.display().to_string()),
     }
 }
@@ -186,8 +188,9 @@ unset __shellsync_rest __shellsync_path __shellsync_dir"#;
             hook.contains(r#"cfg="${USERPROFILE}/.config/shellsync/config.toml" "#),
             "{hook}"
         );
+        // A command name without `/` is looked up on PATH, so not `C:\...`.
         assert!(
-            hook.contains(r"local exe='C:\Program Files\shellsync\shellsync.exe' "),
+            hook.contains("local exe='C:/Program Files/shellsync/shellsync.exe' "),
             "{hook}"
         );
     }
