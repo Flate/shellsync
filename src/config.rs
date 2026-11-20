@@ -429,8 +429,11 @@ mod tests {
         .unwrap();
         let get = |i: usize, shell| cfg.entries.aliases[i].1.get(shell);
         assert_eq!(get(0, Shell::Zsh), Some("for sh"));
+        assert_eq!(get(0, Shell::Bash), Some("for sh"));
         assert_eq!(get(0, Shell::Nu), Some("for nu"));
         assert_eq!(get(1, Shell::Zsh), Some("for zsh"));
+        assert_eq!(get(1, Shell::Bash), Some("for sh"));
+        assert_eq!(get(2, Shell::Pwsh), None);
         assert_eq!(get(2, Shell::Nu), None);
     }
 
@@ -457,19 +460,19 @@ mod tests {
         assert!(e("[env]\n\"BAD-NAME\" = 'x'").starts_with("env.BAD-NAME"));
         assert_eq!(
             e("[env]\nX = { fish = 'x' }"),
-            "env.X.fish: unknown key (expected `sh`, `zsh`, `nu` or `pwsh`)"
+            "env.X.fish: unknown key (expected `sh`, `zsh`, `bash`, `nu` or `pwsh`)"
         );
         assert!(e("[aliases]\nx = { sh = ' ' }").contains("empty"));
         assert!(e("[path]\nprepend = [1]").starts_with("path.prepend[0]"));
         assert!(e("[aliases]\nx = ''").contains("empty"));
         assert_eq!(
             e("[bogus]"),
-            "unknown section `bogus` (expected env, path, aliases, tool, sh, zsh, nu or pwsh)"
+            "unknown section `bogus` (expected env, path, aliases, tool, sh, zsh, bash, nu or pwsh)"
         );
         assert!(e("[env\n").contains("line 1"));
         assert_eq!(
             e("[tool.eza]\nfoo = 1"),
-            "tool.eza.foo: unknown key (expected command, exists, env, path, aliases, sh, zsh, nu or pwsh)"
+            "tool.eza.foo: unknown key (expected command, exists, env, path, aliases, sh, zsh, bash, nu or pwsh)"
         );
         assert!(e("[tool.eza.env]\n\"BAD-NAME\" = 'x'").starts_with("tool.eza.env.BAD-NAME"));
         assert!(e("[tool.eza.aliases]\nx = { fish = 'x' }").starts_with("tool.eza.aliases.x.fish"));

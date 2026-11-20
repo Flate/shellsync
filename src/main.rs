@@ -17,21 +17,22 @@ use probe::Probe;
 use shell::{Checks, Shell};
 
 const USAGE: &str = "\
-shellsync - configure zsh, nushell and PowerShell from one file
+shellsync - configure zsh, bash, nushell and PowerShell from one file
 
 Usage: shellsync <command> [options]
 
 Commands:
   install          Create the config if missing, build, and hook into
-                   ~/.zshenv, ~/.zshrc, nushell's env.nu / config.nu and
-                   PowerShell's profile.ps1
+                   ~/.zshenv, ~/.zshrc, ~/.bashrc, nushell's env.nu /
+                   config.nu and PowerShell's profile.ps1
   uninstall        Remove the hooks (config and cache are kept)
   edit             Open the config in $VISUAL / $EDITOR, then rebuild
   build            Regenerate the shell files (shells do this automatically)
   check            Validate the config, and parse the generated code with
                    each shell (where installed)
-  print <shell>    Print the generated code for zsh, nu or pwsh
-  hook <file>      Print the hook for zshenv, zshrc, nu-env, nu-config or pwsh
+  print <shell>    Print the generated code for zsh, bash, nu or pwsh
+  hook <file>      Print the hook for zshenv, zshrc, bashrc, nu-env, nu-config
+                   or pwsh
   paths            Show the files shellsync reads and writes
 
 Options:
@@ -155,8 +156,11 @@ fn run(args: Vec<String>) -> Result {
     };
 
     let shell_arg = |pos: &[String]| -> Result<Shell> {
-        let s = pos.get(1).ok_or("expected a shell: zsh, nu or pwsh")?;
-        Shell::parse(s).ok_or_else(|| format!("unknown shell `{s}` (expected zsh, nu or pwsh)"))
+        let s = pos
+            .get(1)
+            .ok_or("expected a shell: zsh, bash, nu or pwsh")?;
+        Shell::parse(s)
+            .ok_or_else(|| format!("unknown shell `{s}` (expected zsh, bash, nu or pwsh)"))
     };
 
     match positional.first().map(String::as_str) {
@@ -186,7 +190,7 @@ fn run(args: Vec<String>) -> Result {
         Some("hook") => {
             let which = positional
                 .get(1)
-                .ok_or("expected zshenv, zshrc, nu-env, nu-config or pwsh")?;
+                .ok_or("expected zshenv, zshrc, bashrc, nu-env, nu-config or pwsh")?;
             let kind = HookFile::parse(which).ok_or_else(|| format!("unknown hook `{which}`"))?;
             print!("{}", kind.block(&paths, &exe()?, &home()));
             Ok(())
@@ -372,8 +376,9 @@ fn check(paths: &Paths) -> Result {
 /// shell's message.
 type ParseError = (String, String);
 
-/// Parses the generated `files` with the shell each is for. Returns each
-/// shell's errors, or None if the shell isn't installed.
+/// Parses the generated `files` with the shell each is for, for the shells
+/// native to this platform. Returns each shell's errors, or None if the
+/// shell isn't installed.
 fn parse_all(
     cfg: &Config,
     files: &[(Shell, &str, String)],
@@ -381,6 +386,7 @@ fn parse_all(
     let dir = TempDir::new()?;
     Shell::ALL
         .into_iter()
+        .filter(|shell| shell.native())
         .map(|shell| {
             let files: Vec<_> = files
                 .iter()

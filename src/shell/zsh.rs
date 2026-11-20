@@ -77,7 +77,7 @@ pub fn template_word(s: &str) -> String {
 }
 
 /// A path as a zsh word, relative to `$HOME` where possible.
-fn path_word(p: &Path, home: &Path) -> String {
+pub(super) fn path_word(p: &Path, home: &Path) -> String {
     match home_relative(p, home) {
         Some(rel) => template_word(&format!("~/{}", rel.replace('$', "$$"))),
         None => quote(&p.display().to_string()),

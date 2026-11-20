@@ -1,15 +1,16 @@
-# shellsync: one config for zsh, nushell and PowerShell.
+# shellsync: one config for zsh, bash, nushell and PowerShell.
 #
-# Edit with `shellsync edit`. Changes apply to every new zsh, nu and pwsh session.
+# Edit with `shellsync edit`. Changes apply to every new zsh, bash, nu and pwsh
+# session.
 #
 # In [env] values and [path] entries:
 #   ~/...           your home directory
 #   $NAME, ${NAME}  another environment variable (resolved at shell startup)
 #   $$              a literal $
 #
-# Any value can be split per shell:  KEY = { zsh = "...", nu = "...", pwsh = "..." }
+# Any value can be split per shell:  KEY = { zsh = "...", bash = "...", nu = "...", pwsh = "..." }
 # Leave a shell out to skip it there. `sh` stands for every shell with POSIX
-# sh syntax (currently zsh); a shell's own key takes precedence over it.
+# sh syntax (zsh and bash); a shell's own key takes precedence over it.
 
 [env]
 EDITOR = "vim"
@@ -36,6 +37,11 @@ gs = "git status"
 
 [zsh]
 # Raw zsh code, appended to the generated file.
+init = '''
+'''
+
+[bash]
+# Raw bash code, appended to the generated file.
 init = '''
 '''
 

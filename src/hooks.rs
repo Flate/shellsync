@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::shell::{nu, pwsh, zsh};
+use crate::shell::{Shell, bash, nu, pwsh, zsh};
 use crate::{Paths, Result};
 
 pub const BEGIN: &str = "# >>> shellsync >>>";
@@ -14,6 +14,7 @@ pub const END: &str = "# <<< shellsync <<<";
 pub enum HookFile {
     Zshenv,
     Zshrc,
+    Bashrc,
     NuEnv,
     NuConfig,
     PwshProfile,
@@ -25,6 +26,7 @@ impl HookFile {
         match s {
             "zshenv" => Some(HookFile::Zshenv),
             "zshrc" => Some(HookFile::Zshrc),
+            "bashrc" => Some(HookFile::Bashrc),
             "nu-env" => Some(HookFile::NuEnv),
             "nu-config" => Some(HookFile::NuConfig),
             "pwsh" => Some(HookFile::PwshProfile),
@@ -36,6 +38,7 @@ impl HookFile {
         match self {
             HookFile::Zshenv => "zshenv",
             HookFile::Zshrc => "zshrc",
+            HookFile::Bashrc => "bashrc",
             HookFile::NuEnv => "nu env",
             HookFile::NuConfig => "nu config",
             HookFile::PwshProfile => "pwsh profile",
@@ -54,6 +57,7 @@ impl HookFile {
         let body = match self {
             HookFile::Zshenv => zsh::env_hook(paths, exe, home),
             HookFile::Zshrc => zsh::rc_hook(paths, home),
+            HookFile::Bashrc => bash::rc_hook(paths, exe, home),
             HookFile::NuEnv => nu::env_hook(paths, exe, home),
             HookFile::NuConfig => nu::config_hook(paths, home),
             HookFile::PwshProfile => pwsh::profile_hook(paths, exe, home),
@@ -62,12 +66,15 @@ impl HookFile {
     }
 }
 
-/// Where each hook goes on this machine. zsh isn't a Windows shell.
+/// Where each hook goes on this machine, for the shells native to it.
 pub fn files() -> Vec<(HookFile, PathBuf)> {
     let mut files = Vec::new();
-    if !cfg!(windows) {
+    if Shell::Zsh.native() {
         files.push((HookFile::Zshenv, zsh::env_file()));
         files.push((HookFile::Zshrc, zsh::rc_file()));
+    }
+    if Shell::Bash.native() {
+        files.push((HookFile::Bashrc, bash::rc_file()));
     }
     let (nu_env, nu_config) = nu::config_files();
     files.push((HookFile::NuEnv, nu_env));
@@ -193,6 +200,21 @@ mod tests {
                  {END}\n"
             )
         );
+        assert_eq!(
+            HookFile::Bashrc.block(&paths, exe, home),
+            format!(
+                "{BEGIN}\n\
+                 __shellsync_build() {{\n  \
+                 local exe=\"${{HOME}}/.cargo/bin/shellsync\" cfg=\"${{HOME}}/.config/shellsync/config.toml\" out=\"${{HOME}}/.cache/shellsync/init.bash\"\n  \
+                 if [[ $- == *i* && -x $exe && ( ! -e $out || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
+                 \"$exe\" build --config \"$cfg\" --out-dir \"${{HOME}}/.cache/shellsync\"\n  \
+                 fi\n\
+                 }}\n\
+                 __shellsync_build; unset -f __shellsync_build\n\
+                 [[ -r \"${{HOME}}/.cache/shellsync/init.bash\" ]] && source \"${{HOME}}/.cache/shellsync/init.bash\"\n\
+                 {END}\n"
+            )
+        );
         let nu_env = HookFile::NuEnv.block(&paths, exe, home);
         assert!(nu_env.contains("let exe = ('~/.cargo/bin/shellsync' | path expand)"));
         assert!(nu_env.contains("try { ^$exe build --config $cfg --out-dir $dir }"));
@@ -233,6 +255,11 @@ mod tests {
         assert!(
             zsh.contains("local exe='/opt/homebrew/bin/shellsync' "),
             "{zsh}"
+        );
+        let bash = HookFile::Bashrc.block(&paths, exe, home);
+        assert!(
+            bash.contains("local exe='/opt/homebrew/bin/shellsync' "),
+            "{bash}"
         );
         let nu = HookFile::NuEnv.block(&paths, exe, home);
         assert!(nu.contains("let exe = ('/opt/homebrew/bin/shellsync' | path expand)"));

@@ -1,7 +1,8 @@
 //! End-to-end tests: hook shellsync into throwaway startup files and start
 //! real shells. A test is skipped (with a note) when its shell is not
 //! installed, unless SHELLSYNC_REQUIRE_SHELLS is set (as in CI), where a
-//! missing shell fails. zsh is never required on Windows.
+//! missing shell fails. zsh and bash, which shellsync doesn't hook into on
+//! Windows, are skipped there.
 //!
 //! Nothing is written outside each test's [`Sandbox`] directory: a test that
 //! runs `install` first checks with `shellsync paths` where it would write.
@@ -10,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime};
 
 const BIN: &str = env!("CARGO_BIN_EXE_shellsync");
 
@@ -56,13 +58,15 @@ env.NOT_SET = "no"
 }
 
 fn has(shell: &str) -> bool {
+    if cfg!(windows) && matches!(shell, "zsh" | "bash") {
+        return false;
+    }
     let found = Command::new(shell)
         .arg("-c")
         .arg("exit 0")
         .output()
         .is_ok_and(|o| o.status.success());
-    let required = !(cfg!(windows) && shell == "zsh");
-    if !found && required && std::env::var_os("SHELLSYNC_REQUIRE_SHELLS").is_some() {
+    if !found && std::env::var_os("SHELLSYNC_REQUIRE_SHELLS").is_some() {
         panic!("{shell} not installed, but SHELLSYNC_REQUIRE_SHELLS is set");
     }
     found
@@ -112,7 +116,7 @@ impl Sandbox {
     fn installed() -> Sandbox {
         let sb = Sandbox::new();
         sb.install(BIN);
-        fs::write(sb.config(), config()).unwrap();
+        sb.edit_config(&config());
         sb
     }
 
@@ -121,6 +125,20 @@ impl Sandbox {
             self.dir.join("shellsync.toml")
         } else {
             self.dir.join(".config/shellsync/config.toml")
+        }
+    }
+
+    /// Writes the config as an edit would: at least a second after the
+    /// version before. bash before 5 compares file times in whole seconds,
+    /// so it would miss a quicker edit, and the tests edit faster than people.
+    fn edit_config(&self, text: &str) {
+        let config = self.config();
+        let before = fs::metadata(&config).and_then(|m| m.modified()).ok();
+        fs::write(&config, text).unwrap();
+        if let Some(before) = before {
+            let at = SystemTime::now().max(before + Duration::from_secs(1));
+            let file = fs::File::options().write(true).open(&config).unwrap();
+            file.set_modified(at).unwrap();
         }
     }
 
@@ -260,9 +278,18 @@ impl Sandbox {
     /// Runs `code` in the shell; returns (stdout, stderr).
     fn shell(&self, shell: &str, code: &str) -> (String, String) {
         let out = self.shell_cmd(shell, code).output().unwrap();
+        // Interactive bash without a terminal says so.
+        let stderr = String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .filter(|l| {
+                !(shell == "bash"
+                    && (l.contains("no job control") || l.contains("terminal process group")))
+            })
+            .map(|l| format!("{l}\n"))
+            .collect();
         (
             String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
+            stderr,
         )
     }
 }
@@ -371,6 +398,78 @@ fn zsh_login_shells_keep_path_order() {
         path.starts_with(&format!("{}/go/bin:/usr/bin:", sb.home.display())),
         "{path}"
     );
+}
+
+#[test]
+fn bash_end_to_end() {
+    if !has("bash") {
+        eprintln!("bash not installed, skipping");
+        return;
+    }
+    let sb = Sandbox::installed();
+    let (out, err) = sb.shell(
+        "bash",
+        r#"printf '%s\n' "$GOPATH" "$TRICKY" "${ONLY_ZSH-unset}" "$PATH"; alias greet; alias ll 2>/dev/null || echo no-ll; echo "$FOR_SH"; alias over; alias missing_tool 2>/dev/null || echo no-missing-tool; echo "${FROM_TOOL:-unset} ${NOT_SET:-unset}"; [[ $(bash -i -c 'echo "$PATH"' 2>/dev/null) == "$PATH" ]] && echo same-path"#,
+    );
+    assert_eq!(err, "");
+    let lines: Vec<&str> = out.lines().collect();
+    let h = sb.home.display();
+    assert_eq!(lines[0], format!("{h}/go"));
+    assert_eq!(lines[1], "it's \"q\" $x `y` (z) {w}");
+    assert_eq!(lines[2], "unset", "zsh only");
+    assert!(
+        lines[3].starts_with(&format!("{h}/go/bin:/usr/bin:")),
+        "{}",
+        lines[3]
+    );
+    assert!(lines[3].ends_with(":/opt/shellsync-test"), "{}", lines[3]);
+    assert_eq!(
+        format!(":{}:", lines[3]).matches(":/usr/bin:").count(),
+        1,
+        "deduplicated"
+    );
+    assert_eq!(lines[4], "alias greet='echo hello'");
+    assert_eq!(lines[5], "no-ll", "no bash value");
+    assert_eq!(lines[6], "s");
+    assert_eq!(lines[7], "alias over='echo tool'");
+    assert_eq!(lines[8], "no-missing-tool");
+    assert_eq!(lines[9], "yes unset");
+    assert_eq!(lines[10], "same-path", "a nested bash keeps PATH as it is");
+}
+
+/// A `[tool]` command must be a file that can run, as at build time: a file
+/// of that name on PATH without the executable bit doesn't count.
+#[cfg(unix)]
+#[test]
+fn tools_need_an_executable_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for sh in ["zsh", "bash"] {
+        if !has(sh) {
+            eprintln!("{sh} not installed, skipping");
+            continue;
+        }
+        let sb = Sandbox::new();
+        sb.install(BIN);
+        sb.edit_config("[tool.shellsync-fake-tool.aliases]\nfake = \"shellsync-fake-tool\"\n");
+        let bin = sb.dir.join("bin");
+        let tool = bin.join("shellsync-fake-tool");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let has_alias = || {
+            let mut c = sb.shell_cmd(sh, "alias fake >/dev/null 2>&1 && echo yes || echo no");
+            c.env("PATH", &path);
+            run(c).trim() == "yes"
+        };
+        assert!(!has_alias(), "{sh}: not executable");
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(has_alias(), "{sh}: executable");
+    }
 }
 
 #[cfg(unix)]
@@ -485,7 +584,7 @@ fn pwsh_end_to_end() {
 fn symlinked_config_does_not_rebuild_every_start() {
     use std::os::unix::fs::MetadataExt;
 
-    for sh in ["zsh", "nu", "pwsh"] {
+    for sh in ["zsh", "bash", "nu", "pwsh"] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
             continue;
@@ -582,8 +681,8 @@ fn check(sb: &Sandbox, config: &str, path: &str) -> (bool, String, String) {
 
 #[test]
 fn check_parses_the_code_with_each_shell() {
-    let zsh = !cfg!(windows);
-    if (zsh && !has("zsh")) || !has("nu") || !has("pwsh") {
+    let sh = !cfg!(windows);
+    if (sh && (!has("zsh") || !has("bash"))) || !has("nu") || !has("pwsh") {
         eprintln!("a shell is not installed, skipping");
         return;
     }
@@ -593,13 +692,13 @@ fn check_parses_the_code_with_each_shell() {
     let broken = r#"
 [aliases]
 ok = "echo ok"
-quote = { zsh = "echo 'open", nu = "echo ok" }
+quote = { sh = "echo 'open", nu = "echo ok" }
 piped = "ls | sort"
 
 # Not installed anywhere, but checked all the same.
 [tool.c]
 exists = "/shellsync/does/not/exist"
-zsh.init = """
+sh.init = """
 if true; then
   echo x
 """
@@ -607,13 +706,21 @@ pwsh.init = "if ($true) {"
 "#;
     let (ok, out, err) = check(&sb, broken, &path);
     assert!(!ok);
-    if zsh {
-        assert_eq!(err, "shellsync: 4 parse errors\n");
+    if sh {
+        assert_eq!(err, "shellsync: 6 parse errors\n");
         assert!(
             out.contains("\nzsh: 2 errors\n  aliases.quote:1: "),
             "{out}"
         );
-        assert!(out.contains("\n  tool.c.zsh.init:3: parse error"), "{out}");
+        assert!(out.contains("\n  tool.c.sh.init:3: parse error"), "{out}");
+        assert!(
+            out.contains("\nbash: 2 errors\n  aliases.quote: line 1: "),
+            "{out}"
+        );
+        assert!(
+            out.contains("\n  tool.c.sh.init: line 3: syntax error"),
+            "{out}"
+        );
     } else {
         assert_eq!(err, "shellsync: 2 parse errors\n");
     }
@@ -633,16 +740,12 @@ nu.init = "let shared = 1"
 exists = "/"
 nu.init = "print $shared"
 "#;
-    let zsh_line = if zsh {
-        "zsh: ok"
-    } else {
-        "zsh: not installed, not checked"
-    };
+    let sh_lines = if sh { "zsh: ok\nbash: ok\n" } else { "" };
     for config in [in_context, &config()] {
         let (ok, out, err) = check(&sb, config, &path);
         assert!(ok, "{out}{err}");
         assert!(
-            out.ends_with(&format!("\n{zsh_line}\nnu: ok\npwsh: ok\n")),
+            out.ends_with(&format!("\n{sh_lines}nu: ok\npwsh: ok\n")),
             "{out}"
         );
     }
@@ -669,7 +772,7 @@ fn check_skips_shells_that_are_not_installed() {
     assert!(ok, "{out}{err}");
     assert!(
         out.ends_with(
-            "\nzsh: ok\nnu: not installed, not checked\npwsh: not installed, not checked\n"
+            "\nzsh: ok\nbash: not installed, not checked\nnu: not installed, not checked\npwsh: not installed, not checked\n"
         ),
         "{out}"
     );
@@ -679,6 +782,7 @@ fn check_skips_shells_that_are_not_installed() {
 fn edits_are_picked_up_and_errors_keep_last_good_config() {
     for (sh, print) in [
         ("zsh", "print -r -- $GOPATH"),
+        ("bash", r#"echo "$GOPATH""#),
         ("nu", "print $env.GOPATH"),
         ("pwsh", "$env:GOPATH"),
     ] {
@@ -695,11 +799,11 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
             "{sh}"
         );
 
-        fs::write(&config, "[env]\nGOPATH = '/elsewhere'\n").unwrap();
+        sb.edit_config("[env]\nGOPATH = '/elsewhere'\n");
         assert_eq!(sb.shell(sh, print).0, "/elsewhere", "{sh}");
 
         // A broken config reports the error; the shell keeps the last good build.
-        fs::write(&config, "[env\n").unwrap();
+        sb.edit_config("[env\n");
         let (out, err) = sb.shell(sh, print);
         assert_eq!(out, "/elsewhere", "{sh}");
         let name = config.file_name().unwrap().to_str().unwrap();
@@ -707,17 +811,15 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
 
         // So does valid TOML with code the shells can't parse; in nushell it
         // would stop the whole config from loading.
-        fs::write(
-            &config,
-            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { zsh = \"echo 'open\", nu = \"ls | sort\", pwsh = \"echo (\" }\n",
-        )
-        .unwrap();
+        sb.edit_config(
+            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { sh = \"echo 'open\", nu = \"ls | sort\", pwsh = \"echo (\" }\n",
+        );
         let (out, err) = sb.shell(sh, print);
         assert_eq!(out, "/elsewhere", "{sh}: {err}");
         assert!(err.contains("keep the last good build"), "{sh}: {err}");
         assert!(err.contains("aliases.bad"), "{sh}: {err}");
 
-        fs::write(&config, "[env]\nGOPATH = '/fixed'\n").unwrap();
+        sb.edit_config("[env]\nGOPATH = '/fixed'\n");
         assert_eq!(sb.shell(sh, print).0, "/fixed", "{sh}");
 
         // Even with no previous build, the shell still starts.
@@ -731,7 +833,7 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
 /// missing or has moved. Shells must still start, without error output.
 #[test]
 fn shells_start_quietly_without_the_binary() {
-    for sh in ["zsh", "nu", "pwsh"] {
+    for sh in ["zsh", "bash", "nu", "pwsh"] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
             continue;
@@ -770,10 +872,14 @@ fn install_is_idempotent_and_uninstall_restores() {
     let hooks: Vec<PathBuf> = sb
         .assert_inside(&shellsync("paths"))
         .into_iter()
-        .filter(|(name, _)| ["zsh", "nu ", "pwsh"].iter().any(|s| name.starts_with(s)))
+        .filter(|(name, _)| {
+            ["zsh", "bash", "nu ", "pwsh"]
+                .iter()
+                .any(|s| name.starts_with(s))
+        })
         .map(|(_, path)| path)
         .collect();
-    let expected = if cfg!(windows) { 3 } else { 5 };
+    let expected = if cfg!(windows) { 3 } else { 6 };
     assert_eq!(hooks.len(), expected, "{hooks:?}");
     let profile = hooks.last().unwrap();
     fs::create_dir_all(profile.parent().unwrap()).unwrap();

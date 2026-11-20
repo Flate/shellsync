@@ -1,6 +1,7 @@
 //! The supported shells. Everything specific to one shell lives in its
 //! module: quoting, the generated code, the startup hooks and where they go.
 
+pub mod bash;
 pub mod nu;
 pub mod pwsh;
 pub mod zsh;
@@ -14,17 +15,19 @@ use crate::probe::Probe;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Shell {
     Zsh,
+    Bash,
     Nu,
     Pwsh,
 }
 
 impl Shell {
-    pub const ALL: [Shell; 3] = [Shell::Zsh, Shell::Nu, Shell::Pwsh];
+    pub const ALL: [Shell; 4] = [Shell::Zsh, Shell::Bash, Shell::Nu, Shell::Pwsh];
 
     /// The name used in the config file and in generated file names.
     pub fn name(self) -> &'static str {
         match self {
             Shell::Zsh => "zsh",
+            Shell::Bash => "bash",
             Shell::Nu => "nu",
             Shell::Pwsh => "pwsh",
         }
@@ -33,7 +36,13 @@ impl Shell {
     /// Whether the shell shares POSIX sh syntax, so the `sh` config key
     /// applies to it.
     pub fn is_sh(self) -> bool {
-        matches!(self, Shell::Zsh)
+        matches!(self, Shell::Zsh | Shell::Bash)
+    }
+
+    /// Whether shellsync hooks the shell into this platform: zsh and bash
+    /// aren't Windows shells (`bash.exe` there may well start WSL).
+    pub fn native(self) -> bool {
+        !(cfg!(windows) && self.is_sh())
     }
 
     /// The shell with this config name.
@@ -55,6 +64,7 @@ impl Shell {
     pub fn syntax_check(self, file: &str) -> Command {
         match self {
             Shell::Zsh => zsh::syntax_check(file),
+            Shell::Bash => bash::syntax_check(file),
             Shell::Nu => nu::syntax_check(file),
             Shell::Pwsh => pwsh::syntax_check(file),
         }
@@ -67,6 +77,7 @@ impl Shell {
             // (interactive) the rest, with PATH again: macOS login shells run
             // path_helper in between, which moves earlier entries to the end.
             Shell::Zsh => &[("env.zsh", Parts::ENV), ("init.zsh", Parts::INTERACTIVE)],
+            Shell::Bash => &[("init.bash", Parts::ALL)],
             Shell::Nu => &[("init.nu", Parts::ALL)],
             Shell::Pwsh => &[("init.ps1", Parts::ALL)],
         }
@@ -140,6 +151,7 @@ pub struct Rendered {
 pub fn render(cfg: &Config, shell: Shell, source: &str, checks: &Checks) -> Rendered {
     match shell {
         Shell::Zsh => render_with::<zsh::Zsh>(cfg, shell, source, checks),
+        Shell::Bash => render_with::<bash::Bash>(cfg, shell, source, checks),
         Shell::Nu => render_with::<nu::Nu>(cfg, shell, source, checks),
         Shell::Pwsh => render_with::<pwsh::Pwsh>(cfg, shell, source, checks),
     }
@@ -159,6 +171,7 @@ pub struct Snippet {
 pub fn snippets(cfg: &Config, shell: Shell) -> Vec<Snippet> {
     match shell {
         Shell::Zsh => snippets_with::<zsh::Zsh>(cfg, shell),
+        Shell::Bash => snippets_with::<bash::Bash>(cfg, shell),
         Shell::Nu => snippets_with::<nu::Nu>(cfg, shell),
         Shell::Pwsh => snippets_with::<pwsh::Pwsh>(cfg, shell),
     }

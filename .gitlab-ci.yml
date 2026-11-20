@@ -95,13 +95,15 @@ test:macos:
   before_script:
     - export PATH="/opt/homebrew/bin:$PATH"
     - zsh --version
+    - bash --version
     - nu --version
     - pwsh --version
   script:
     - cargo test --locked
 
 # Runs on a Windows machine (shell executor, PowerShell) with Rust, nushell
-# and PowerShell installed machine-wide (not pinned). zsh isn't a Windows shell.
+# and PowerShell installed machine-wide (not pinned). shellsync doesn't hook
+# zsh and bash on Windows.
 test:windows:
   stage: test
   tags:

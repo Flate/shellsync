@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `shellsync` CLI that generates zsh, nushell and PowerShell 7 configuration from one TOML file: `install`, `uninstall`, `edit`, `build`, `check`, `print`, `hook`, `paths`
-- `sh` key in per-shell values and `[sh] init` section for all sh-family shells (currently zsh)
+- `shellsync` CLI that generates zsh, bash, nushell and PowerShell 7 configuration from one TOML file: `install`, `uninstall`, `edit`, `build`, `check`, `print`, `hook`, `paths`
+- `sh` key in per-shell values and `[sh] init` section for zsh and bash
 - `[tool.X]` tables for entries that apply only where a tool is installed (`command`) or a path exists (`exists`); checked at every shell start
 - zsh environment variables and PATH load from `.zshenv`, so scripts and other non-interactive zsh sessions get them too; aliases and init code load from `.zshrc`
 - `--exe` option for `install` and `hook`, to set the binary the hooks run, e.g. in dotfile templates

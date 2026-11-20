@@ -1,10 +1,10 @@
 # shellsync
 
-Configure **zsh**, **nushell** and **PowerShell** from one file.
+Configure **zsh**, **bash**, **nushell** and **PowerShell** from one file.
 
 You write environment variables, PATH entries and aliases once, in
 `~/.config/shellsync/config.toml`. shellsync turns that file into native zsh,
-nushell and PowerShell code and hooks it into each shell. After a one-time `install` you
+bash, nushell and PowerShell code and hooks it into each shell. After a one-time `install` you
 don't run it yourself: edit the file and every new shell picks up the change.
 
 ```toml
@@ -18,7 +18,7 @@ prepend = ["~/.local/bin", "$GOPATH/bin"]
 [aliases]
 g  = "git"
 gs = "git status"
-ll = { zsh = "ls -lh", nu = "ls -l" }   # different per shell
+ll = { sh = "ls -lh", nu = "ls -l" }   # different per shell
 ```
 
 ## Install
@@ -47,9 +47,9 @@ yourself instead, run `cargo install --path .`, or `cargo build --release` and
 copy `target/release/shellsync` onto your PATH.
 
 `install` creates a starter config if you don't have one, builds it, and adds a
-small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`;
-not on Windows), to nushell's `env.nu` and `config.nu`, and to PowerShell's
-`profile.ps1`.
+small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`)
+and `~/.bashrc` (not on Windows), to nushell's `env.nu` and `config.nu`, and
+to PowerShell's `profile.ps1`.
 Running it again is safe: the block
 is replaced, not duplicated. Paths under your home directory are written as
 `$HOME/...` or `~/...`, so the hooks still work if you sync your dotfiles to a
@@ -60,20 +60,21 @@ files as it was.
 
 **Dotfiles managed by a tool** such as chezmoi: `install` edits the files in
 place, which the tool would overwrite or report as changed. Instead, put the
-blocks into your templates. `shellsync hook zshenv` (and `zshrc`, `nu-env`,
-`nu-config`, `pwsh`) prints each one; `--exe` sets where the binary is, for example
+blocks into your templates. `shellsync hook zshenv` (and `zshrc`, `bashrc`,
+`nu-env`, `nu-config`, `pwsh`) prints each one; `--exe` sets where the binary is, for example
 `shellsync hook zshenv --exe ~/.local/bin/shellsync`, so the blocks don't
 depend on where shellsync ran when you printed them.
 
 ## How it stays fast and invisible
 
 * **Startup does almost nothing.** The hooks compare two file timestamps with
-  the shell's own builtins (`[[ -nt ]]` in zsh, `ls` in nushell, .NET calls in
-  PowerShell) and then
+  the shell's own builtins (`[[ -nt ]]` in zsh and bash, `ls` in nushell, .NET
+  calls in PowerShell) and then
   `source` a cached file. No extra process starts unless the config has
   changed (or, for nushell, a [tool](#conditional-entries) was installed or
-  removed). Measured cost: about 2.5 ms for a whole interactive zsh start, and
-  about 3.5 ms added to a nushell start. PowerShell is slower to start on its
+  removed). Measured cost: about 2.5 ms for a whole interactive zsh start,
+  about 0.4 ms added to a bash start, and about 3.5 ms added to a nushell
+  start. PowerShell is slower to start on its
   own (about 170 ms); the hook and the generated code add about 45 ms with ten
   aliases and ten tools, most of it PowerShell's one-time cost for the first
   code it compiles, which any profile code pays.
@@ -82,9 +83,9 @@ depend on where shellsync ran when you printed them.
   or about 235 ms with PowerShell installed, most of it the shells parsing the
   result), then loads the result.
 * **Output is plain shell code.** The generated files are in
-  `~/.cache/shellsync/` (`env.zsh`, `init.zsh`, `init.nu`, `init.ps1`, and
-  `tools.nu` for nushell's [tool checks](#conditional-entries));
-  `shellsync print zsh` (or `nu`, `pwsh`) shows them. Only your user can read them, since the
+  `~/.cache/shellsync/` (`env.zsh`, `init.zsh`, `init.bash`, `init.nu`,
+  `init.ps1`, and `tools.nu` for nushell's [tool checks](#conditional-entries));
+  `shellsync print zsh` (or `bash`, `nu`, `pwsh`) shows them. Only your user can read them, since the
   config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
   prints the error with its line number and keeps using the last good build.
@@ -106,6 +107,18 @@ because macOS login shells (the default in Terminal and iTerm) run
 `path_helper` from `/etc/zprofile` between the two, which moves PATH entries
 set earlier to the end.
 
+**bash** (3.2 or later, so also the one macOS ships) loads everything from
+`init.bash`, which `.bashrc` sources. Interactive shells read `.bashrc`; login
+shells read `.bash_profile` or `.profile` instead, which on most Linux
+distributions source `.bashrc`. On macOS, where Terminal starts bash as a
+login shell, add `source ~/.bashrc` to your `.bash_profile` if it doesn't
+have it. bash also reads `.bashrc` for `ssh host command`; such a shell isn't
+interactive, so it uses the last build without rebuilding. PATH entries are
+deduplicated as in the other shells, so a bash started from bash keeps PATH
+as it is. bash before 5.x compares file times in whole seconds: a config
+change in the same second as the previous build is picked up only with the
+next change (or `shellsync build`).
+
 **nushell** parses `config.nu` completely before running it, so the file it
 `source`s has to exist beforehand. That's why the rebuild check lives in
 `env.nu`, which nushell runs first, and why `config.nu` only sources the file
@@ -121,8 +134,8 @@ generated code use .NET calls instead of cmdlets such as `Test-Path`, because
 the first use of a cmdlet loads its module, which would add about 100 ms to
 every start.
 
-**Windows**: nushell and PowerShell are supported; zsh isn't a Windows shell,
-so `install` leaves it out there. shellsync's own files are where they are on
+**Windows**: nushell and PowerShell are supported; `install` leaves out zsh
+and bash there, and `build` doesn't have them parse the generated code. shellsync's own files are where they are on
 other systems, under your user profile: `.config\shellsync\config.toml` and
 `.cache\shellsync\`. They get the profile folder's permissions (you,
 administrators and the system) instead of mode 0600. `install` asks
@@ -139,9 +152,10 @@ editor through `cmd`, Notepad if `VISUAL` and `EDITOR` aren't set.
 | `[path]`    | `prepend = [...]` and `append = [...]`. Duplicate entries are removed and the first occurrence is kept.         |
 | `[aliases]` | `name = "command"`. The body is shell code and is used exactly as written.                                     |
 | `[zsh]`     | `init = '''...'''`: raw zsh code added at the end of the generated file.                                        |
+| `[bash]`    | `init = '''...'''`: raw bash code added at the end of the generated file.                                       |
 | `[nu]`      | `init = '''...'''`: raw nushell code added at the end of the generated file.                                    |
 | `[pwsh]`    | `init = '''...'''`: raw PowerShell code added at the end of the generated file.                                 |
-| `[sh]`      | `init = '''...'''`: raw code for every sh-family shell (currently zsh), combined with `[zsh] init` in file order. |
+| `[sh]`      | `init = '''...'''`: raw code for zsh and bash, combined with `[zsh]` and `[bash] init` in file order.            |
 | `[tool.X]`  | Any of the above that apply only where a tool is installed; see [Conditional entries](#conditional-entries).    |
 
 **Values in `[env]` and `[path]`** can use:
@@ -151,17 +165,17 @@ editor through `cmd`, Notepad if `VISUAL` and `EDITOR` aren't set.
 * `$$` for a literal `$`
 
 These references are written into each shell's own syntax and resolved when the
-shell starts, so `"$GOPATH/bin"` becomes `"${GOPATH}/bin"` in zsh,
+shell starts, so `"$GOPATH/bin"` becomes `"${GOPATH}/bin"` in zsh and bash,
 `$env.GOPATH`-based code in nushell and `"${env:GOPATH}/bin"` in PowerShell. Quotes, backticks, parentheses and other
 special characters are escaped for each shell.
 
 **Per-shell values.** Any value can be a table:
-`{ zsh = "...", nu = "...", pwsh = "..." }`.
+`{ zsh = "...", bash = "...", nu = "...", pwsh = "..." }`.
 If you leave out a shell, that entry is skipped there. For example,
 `ZSH_AUTOSUGGEST_STRATEGY = { zsh = "history" }` is set only in zsh. The key
-`sh` stands for every shell with POSIX sh syntax (currently zsh); a shell's own
+`sh` stands for every shell with POSIX sh syntax, zsh and bash; a shell's own
 key takes precedence, so `{ sh = "ls -l", zsh = "ls -lh" }` gives zsh
-`ls -lh`. TOML 1.1 allows such a table to span several lines:
+`ls -lh` and bash `ls -l`. TOML 1.1 allows such a table to span several lines:
 
 ```toml
 ll = {
@@ -217,9 +231,10 @@ but not by its own `path` entries. To make a directory's commands depend on the
 directory, use `exists`.
 
 **When conditions are checked.** Every shell checks them each time it starts,
-so installing or removing a tool takes effect in the next shell. zsh and
-PowerShell check them in the generated file, without starting a process (zsh
-with builtins, PowerShell with .NET calls; ten tools add about 12 ms there).
+so installing or removing a tool takes effect in the next shell. zsh, bash
+and PowerShell check them in the generated file, without starting a process
+(zsh and bash with builtins, PowerShell with .NET calls; ten tools add about
+12 ms there).
 nushell defines aliases while
 it parses its config, before anything runs, so an alias can't depend on an
 `if`. Instead, the hook in `env.nu`, which runs first, checks the conditions
@@ -241,8 +256,8 @@ shellsync install        set up hooks (creates the config if missing)
 shellsync uninstall      remove hooks
 shellsync edit           open the config in $VISUAL/$EDITOR, then rebuild
 shellsync check          validate the config and parse the generated code
-shellsync print zsh|nu|pwsh   show the generated code
-shellsync hook zshenv|zshrc|nu-env|nu-config|pwsh   print a hook block, for manual setup
+shellsync print zsh|bash|nu|pwsh   show the generated code
+shellsync hook zshenv|zshrc|bashrc|nu-env|nu-config|pwsh   print a hook block, for manual setup
 shellsync paths          show the files involved
 shellsync build          rebuild by hand (normally done automatically)
 ```
@@ -253,8 +268,8 @@ also be set with `$SHELLSYNC_CONFIG`, and `$XDG_CONFIG_HOME` and
 into the hooks, so later changes to those variables don't affect existing
 hooks. `--exe FILE` sets the binary the hooks run (default: the running one).
 
-**`check`** also hands the generated code to zsh (`zsh -n`), nushell
-(`nu-check`) and PowerShell (its parser) to parse, without running it, so a typo in an alias or init
+**`check`** also hands the generated code to zsh (`zsh -n`), bash
+(`bash -n`), nushell (`nu-check`) and PowerShell (its parser) to parse, without running it, so a typo in an alias or init
 block shows up before a shell trips over it. In nushell, a line that doesn't
 parse stops the whole config from loading, and some aliases that work in zsh
 don't parse there: nushell can't alias a pipeline (`ls -l | sort`). Errors
@@ -265,13 +280,14 @@ installed or not. A shell that isn't installed is skipped. `build` (and so
 for the tools that apply on this machine, and keeps the last good build if
 it fails.
 
-The code is parsed on its own, without the rest of your `.zshrc`, `config.nu`
-or PowerShell profile. A nushell variable defined in your `config.nu` isn't known
+The code is parsed on its own, without the rest of your `.zshrc`, `.bashrc`,
+`config.nu` or PowerShell profile. A nushell variable defined in your `config.nu` isn't known
 there, so code that uses it doesn't parse; define it in `[nu] init` instead.
 
 ## Notes
 
-* Changes apply to **new** shells. In an already open zsh, run `exec zsh`.
+* Changes apply to **new** shells. In an already open zsh, run `exec zsh`
+  (in bash, `exec bash`).
 * zsh reads `$ZDOTDIR/.zshenv` only if ZDOTDIR is set before zsh starts. If
   your `~/.zshenv` sets ZDOTDIR, have it source `$ZDOTDIR/.zshenv`, or put the
   `zshenv` block into `~/.zshenv` yourself.
@@ -286,16 +302,16 @@ there, so code that uses it doesn't parse; define it in `[nu] init` instead.
 ## Development
 
 ```sh
-cargo test     # unit tests, plus end-to-end tests that start real zsh / nu / pwsh
+cargo test     # unit tests, plus end-to-end tests that start real zsh / bash / nu / pwsh
                # in a temporary HOME (skipped if a shell isn't installed)
 SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 ```
 
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
 `cargo clippy` (also for the Windows target), then the tests on Linux (zsh,
-and pinned nushell and PowerShell releases), on a Windows runner tagged
+bash 5, and pinned nushell and PowerShell releases), on a Windows runner tagged
 `windows`, and on a
-macOS runner tagged `macos`.
+macOS runner tagged `macos` (with the system's bash 3.2).
 
 To release a version:
 
