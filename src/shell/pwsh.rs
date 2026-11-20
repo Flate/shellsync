@@ -95,11 +95,22 @@ impl Dialect for Pwsh {
     /// precedence over functions, so a built-in alias of the same name (such
     /// as `gc`) is removed first. Both go through the provider with a literal
     /// path: `${alias:..}` fails for names that aren't valid paths otherwise,
-    /// and `InvokeCommand.GetCommand` costs about 5 ms per alias. Names can't
-    /// contain quotes (see `config`), so they can go into single quotes as
-    /// they are.
+    /// and `InvokeCommand.GetCommand` costs about 5 ms per alias. A
+    /// function also takes precedence over the program of its name, so a body
+    /// that starts with the alias's own name (`rsync = "rsync -a"`) runs that
+    /// program instead of calling itself. Names can't contain quotes (see
+    /// `config`), so they can go into single quotes as they are.
     fn alias(name: &str, body: &str) -> String {
         let body = body.trim();
+        let body = match body.split_once(char::is_whitespace) {
+            Some((first, rest)) if first == name => format!(
+                "& $ExecutionContext.InvokeCommand.GetCommand('{name}', 'Application') {rest}"
+            ),
+            None if body == name => {
+                format!("& $ExecutionContext.InvokeCommand.GetCommand('{name}', 'Application')")
+            }
+            _ => body.to_string(),
+        };
         format!(
             "if ($ExecutionContext.SessionState.InvokeProvider.Item.Exists('Alias:\\{name}', $false, $true)) {{ $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\\{name}', $false, $true, $true) }}\n\
              function {name} {{ {body} @args }}\n"
@@ -290,6 +301,7 @@ mod tests {
             [aliases]
             g = "git"
             ".." = "cd .."
+            rsync = "rsync -a"
             [pwsh]
             init = "Set-PSReadLineOption -EditMode Emacs"
         "#;
@@ -311,6 +323,9 @@ mod tests {
                 // `${alias:..}` would fail at runtime: `..` isn't a valid path there.
                 r"if ($ExecutionContext.SessionState.InvokeProvider.Item.Exists('Alias:\..', $false, $true)) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\..', $false, $true, $true) }",
                 "function .. { cd .. @args }",
+                // The function would call itself; the program runs instead.
+                r"if ($ExecutionContext.SessionState.InvokeProvider.Item.Exists('Alias:\rsync', $false, $true)) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\rsync', $false, $true, $true) }",
+                "function rsync { & $ExecutionContext.InvokeCommand.GetCommand('rsync', 'Application') -a @args }",
                 "",
                 "# --- init ---",
                 "Set-PSReadLineOption -EditMode Emacs",

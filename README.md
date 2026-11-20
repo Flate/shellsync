@@ -129,7 +129,9 @@ if it exists.
 PowerShell aliases can't take arguments, so each alias becomes a function that
 passes its arguments on: `gs = "git status"` becomes
 `function gs { git status @args }`. A built-in alias of the same name, such as
-`gc` or `gp`, is removed so that the function takes effect. The hook and the
+`gc` or `gp`, is removed so that the function takes effect. A function also
+comes before the program of its name, so an alias whose body starts with its
+own name, such as `rsync = "rsync -a"`, runs the program, as in the other shells. The hook and the
 generated code use .NET calls instead of cmdlets such as `Test-Path`, because
 the first use of a cmdlet loads its module, which would add about 100 ms to
 every start.
