@@ -48,8 +48,8 @@ copy `target/release/shellsync` onto your PATH.
 
 `install` creates a starter config if you don't have one, builds it, and adds a
 small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`)
-and `~/.bashrc` (not on Windows), to nushell's `env.nu` and `config.nu`, and
-to PowerShell's `profile.ps1`.
+(not on Windows) and `~/.bashrc` (on Windows only if it exists, see below), to
+nushell's `env.nu` and `config.nu`, and to PowerShell's `profile.ps1`.
 Running it again is safe: the block
 is replaced, not duplicated. Paths under your home directory are written as
 `$HOME/...` or `~/...`, so the hooks still work if you sync your dotfiles to a
@@ -134,8 +134,8 @@ generated code use .NET calls instead of cmdlets such as `Test-Path`, because
 the first use of a cmdlet loads its module, which would add about 100 ms to
 every start.
 
-**Windows**: nushell and PowerShell are supported; `install` leaves out zsh
-and bash there, and `build` doesn't have them parse the generated code. shellsync's own files are where they are on
+**Windows**: nushell, PowerShell and bash in Git Bash, MSYS2 or Cygwin are
+supported; zsh isn't. shellsync's own files are where they are on
 other systems, under your user profile: `.config\shellsync\config.toml` and
 `.cache\shellsync\`. They get the profile folder's permissions (you,
 administrators and the system) instead of mode 0600. `install` asks
@@ -143,6 +143,28 @@ PowerShell where its profile is, since Documents may have moved, to OneDrive
 for example. Commands in `[tool]` checks are found the way the shells find
 them, through PATHEXT: `command = "eza"` matches `eza.exe`. `edit` starts the
 editor through `cmd`, Notepad if `VISUAL` and `EDITOR` aren't set.
+
+**bash on Windows**: Git Bash, MSYS2 and Cygwin each have their own home
+directory and `.bashrc`. Git Bash uses your user profile; MSYS2 and Cygwin
+use `/home/<you>` in their install folder, unless a Windows `HOME` variable is
+set. `install` hooks the `.bashrc` of the bash it runs in, or Git Bash's when
+started from PowerShell, and only if the file exists, since most Windows users
+have no bash. So, in each bash you use: create `~/.bashrc` if it isn't there
+(`touch ~/.bashrc`), then run `shellsync install`. All of them share the one
+config in your user profile. Some things to know:
+
+* `~` and `$HOME` in the config are bash's home, so with MSYS2 or Cygwin not
+  the same folder as in PowerShell.
+* bash's PATH uses its own paths, such as `/c/tools` (Git Bash, MSYS2) or
+  `/cygdrive/c/tools` (Cygwin). `[path]` entries for Windows directories need
+  a `bash = "..."` value in that form.
+* Login shells, which the Git Bash, MSYS2 and Cygwin terminals start, read
+  `.bash_profile`, which should source `.bashrc`. The starter files of MSYS2
+  and Cygwin do that, and Git Bash creates such a `.bash_profile` when it
+  finds only a `.bashrc`.
+* `build` parses the bash code with the bash on PATH, so it is checked when
+  the rebuild runs from bash. A `bash.exe` in the Windows folder or in
+  WindowsApps is WSL's and is never used for that.
 
 ## Config reference
 
@@ -278,7 +300,8 @@ name the config key they come from, such as `aliases.ll` or
 installed or not. A shell that isn't installed is skipped. `build` (and so
 `edit` and the hooks) runs the same check on the code it is about to write,
 for the tools that apply on this machine, and keeps the last good build if
-it fails.
+it fails. The code is parsed from a folder inside the cache directory, not
+from the temp directory, since it may contain values from your config.
 
 The code is parsed on its own, without the rest of your `.zshrc`, `.bashrc`,
 `config.nu` or PowerShell profile. A nushell variable defined in your `config.nu` isn't known
@@ -310,7 +333,7 @@ SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
 `cargo clippy` (also for the Windows target), then the tests on Linux (zsh,
 bash 5, and pinned nushell and PowerShell releases), on a Windows runner tagged
-`windows`, and on a
+`windows` (with Git Bash, MSYS2 and Cygwin), and on a
 macOS runner tagged `macos` (with the system's bash 3.2).
 
 To release a version:

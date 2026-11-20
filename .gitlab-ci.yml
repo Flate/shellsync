@@ -101,9 +101,9 @@ test:macos:
   script:
     - cargo test --locked
 
-# Runs on a Windows machine (shell executor, PowerShell) with Rust, nushell
-# and PowerShell installed machine-wide (not pinned). shellsync doesn't hook
-# zsh and bash on Windows.
+# Runs on a Windows machine (shell executor, PowerShell) with Rust, nushell,
+# PowerShell, Git for Windows, MSYS2 and Cygwin installed machine-wide (not
+# pinned). The tests use the three bash at their default locations.
 test:windows:
   stage: test
   tags:
@@ -122,6 +122,9 @@ test:windows:
     - cargo --version
     - nu --version
     - pwsh --version
+    - '& "C:\Program Files\Git\bin\bash.exe" --version'
+    - '& C:\msys64\usr\bin\bash.exe --version'
+    - '& C:\cygwin64\bin\bash.exe --version'
   script:
     - cargo test --locked
 

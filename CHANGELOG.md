@@ -17,5 +17,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `check` parses the generated code with each shell and names the config key of each error; `build` does the same and keeps the last good build if a shell can't parse it
 - Generated files are readable only by the user (mode 0600)
 - GitLab CI pipeline: lint, end-to-end tests on Linux and macOS, secret scan
-- Windows support for nushell and PowerShell
+- Windows support for nushell, PowerShell and bash (Git Bash, MSYS2, Cygwin)
 - Release binaries for Linux x86_64, macOS arm64 and Windows x86_64 with `SHA256SUMS`, published to the GitLab package registry and releases on `v*` tags

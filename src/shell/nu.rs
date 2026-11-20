@@ -201,8 +201,8 @@ pub fn config_files() -> (PathBuf, PathBuf) {
 
 /// `nu-check` prints the parse error itself; the error it then raises only
 /// says that parsing failed, so it is replaced by the exit status.
-pub fn syntax_check(file: &str) -> Command {
-    let mut c = Command::new("nu");
+pub fn syntax_check(exe: &Path, file: &str) -> Command {
+    let mut c = Command::new(exe);
     c.args([
         "-n",
         "-c",

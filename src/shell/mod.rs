@@ -39,10 +39,10 @@ impl Shell {
         matches!(self, Shell::Zsh | Shell::Bash)
     }
 
-    /// Whether shellsync hooks the shell into this platform: zsh and bash
-    /// aren't Windows shells (`bash.exe` there may well start WSL).
+    /// Whether shellsync hooks the shell into this platform: zsh isn't a
+    /// Windows shell. (bash is, in Git Bash, MSYS2 and Cygwin.)
     pub fn native(self) -> bool {
-        !(cfg!(windows) && self.is_sh())
+        !(cfg!(windows) && self == Shell::Zsh)
     }
 
     /// The shell with this config name.
@@ -59,14 +59,15 @@ impl Shell {
         }
     }
 
-    /// A command that parses `file` with this shell without running it. It
-    /// fails, with the shell's error message on stderr, if `file` doesn't parse.
-    pub fn syntax_check(self, file: &str) -> Command {
+    /// A command that parses `file` with the shell at `exe` without running
+    /// it. It fails, with the shell's error message on stderr, if `file`
+    /// doesn't parse.
+    pub fn syntax_check(self, exe: &Path, file: &str) -> Command {
         match self {
-            Shell::Zsh => zsh::syntax_check(file),
-            Shell::Bash => bash::syntax_check(file),
-            Shell::Nu => nu::syntax_check(file),
-            Shell::Pwsh => pwsh::syntax_check(file),
+            Shell::Zsh => zsh::syntax_check(exe, file),
+            Shell::Bash => bash::syntax_check(exe, file),
+            Shell::Nu => nu::syntax_check(exe, file),
+            Shell::Pwsh => pwsh::syntax_check(exe, file),
         }
     }
 

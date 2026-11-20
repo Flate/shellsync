@@ -1,8 +1,9 @@
 //! End-to-end tests: hook shellsync into throwaway startup files and start
 //! real shells. A test is skipped (with a note) when its shell is not
 //! installed, unless SHELLSYNC_REQUIRE_SHELLS is set (as in CI), where a
-//! missing shell fails. zsh and bash, which shellsync doesn't hook into on
-//! Windows, are skipped there.
+//! missing shell fails. zsh isn't a Windows shell; there, bash means Git
+//! Bash, MSYS2 and Cygwin at their default locations (see
+//! `windows_bash_end_to_end`), and plain `zsh` and `bash` are skipped.
 //!
 //! Nothing is written outside each test's [`Sandbox`] directory: a test that
 //! runs `install` first checks with `shellsync paths` where it would write.
@@ -17,6 +18,15 @@ const BIN: &str = env!("CARGO_BIN_EXE_shellsync");
 
 /// PATH's separator.
 const SEP: &str = if cfg!(windows) { ";" } else { ":" };
+
+/// bash on Windows: Git Bash, MSYS2 and Cygwin, where their installers put
+/// them.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_BASHES: [&str; 3] = [
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\msys64\usr\bin\bash.exe",
+    r"C:\cygwin64\bin\bash.exe",
+];
 
 /// A command that is on PATH on every machine.
 const ON_PATH: &str = if cfg!(windows) { "where" } else { "ls" };
@@ -70,6 +80,11 @@ fn has(shell: &str) -> bool {
         panic!("{shell} not installed, but SHELLSYNC_REQUIRE_SHELLS is set");
     }
     found
+}
+
+/// Whether `shell` (a name or a path) is bash.
+fn is_bash(shell: &str) -> bool {
+    Path::new(shell).file_stem().is_some_and(|s| s == "bash")
 }
 
 fn run(mut c: Command) -> String {
@@ -134,6 +149,7 @@ impl Sandbox {
     fn edit_config(&self, text: &str) {
         let config = self.config();
         let before = fs::metadata(&config).and_then(|m| m.modified()).ok();
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
         fs::write(&config, text).unwrap();
         if let Some(before) = before {
             let at = SystemTime::now().max(before + Duration::from_secs(1));
@@ -151,7 +167,9 @@ impl Sandbox {
         let mut c = Command::new(program);
         if cfg!(windows) {
             // Windows programs need much of the environment to run at all.
-            c.env("SHELLSYNC_CONFIG", self.config())
+            // HOME is bash's home (nushell and PowerShell don't read it).
+            c.env("HOME", &self.dir)
+                .env("SHELLSYNC_CONFIG", self.config())
                 .env("XDG_CACHE_HOME", self.dir.join(".cache"))
                 // nushell keeps its own files there.
                 .env("XDG_CONFIG_HOME", self.dir.join(".config"));
@@ -192,11 +210,12 @@ impl Sandbox {
     }
 
     /// Where the Windows sandbox keeps the hooks.
-    fn hook_files(&self) -> [(&'static str, PathBuf); 3] {
+    fn hook_files(&self) -> [(&'static str, PathBuf); 4] {
         [
             ("nu-env", self.dir.join("nu/env.nu")),
             ("nu-config", self.dir.join("nu/config.nu")),
             ("pwsh", self.dir.join("pwsh/profile.ps1")),
+            ("bashrc", self.dir.join(".bashrc")),
         ]
     }
 
@@ -233,7 +252,7 @@ impl Sandbox {
     /// since they differ by platform (~/Library/Application Support on macOS).
     fn nu_files(&self) -> (PathBuf, PathBuf) {
         if cfg!(windows) {
-            let [(_, env), (_, config), _] = self.hook_files();
+            let [(_, env), (_, config), ..] = self.hook_files();
             return (env, config);
         }
         let mut c = self.cmd("nu");
@@ -261,7 +280,7 @@ impl Sandbox {
                 c.args(["-c", code]);
             }
             "pwsh" if cfg!(windows) => {
-                let [_, _, (_, profile)] = self.hook_files();
+                let [_, _, (_, profile), _] = self.hook_files();
                 let code = format!(". '{}'; {code}", profile.display());
                 c.args(["-NoProfile", "-NonInteractive", "-Command", &code]);
             }
@@ -282,7 +301,7 @@ impl Sandbox {
         let stderr = String::from_utf8_lossy(&out.stderr)
             .lines()
             .filter(|l| {
-                !(shell == "bash"
+                !(is_bash(shell)
                     && (l.contains("no job control") || l.contains("terminal process group")))
             })
             .map(|l| format!("{l}\n"))
@@ -409,7 +428,7 @@ fn bash_end_to_end() {
     let sb = Sandbox::installed();
     let (out, err) = sb.shell(
         "bash",
-        r#"printf '%s\n' "$GOPATH" "$TRICKY" "${ONLY_ZSH-unset}" "$PATH"; alias greet; alias ll 2>/dev/null || echo no-ll; echo "$FOR_SH"; alias over; alias missing_tool 2>/dev/null || echo no-missing-tool; echo "${FROM_TOOL:-unset} ${NOT_SET:-unset}"; [[ $(bash -i -c 'echo "$PATH"' 2>/dev/null) == "$PATH" ]] && echo same-path"#,
+        r#"printf '%s\n' "$GOPATH" "$TRICKY" "${ONLY_ZSH-unset}" "$PATH"; alias greet; alias ll 2>/dev/null || echo no-ll; echo "$FOR_SH"; alias over; alias missing_tool 2>/dev/null || echo no-missing-tool; echo "${FROM_TOOL:-unset} ${NOT_SET:-unset}"; [[ $("$BASH" -i -c 'echo "$PATH"' 2>/dev/null) == "$PATH" ]] && echo same-path"#,
     );
     assert_eq!(err, "");
     let lines: Vec<&str> = out.lines().collect();
@@ -435,6 +454,80 @@ fn bash_end_to_end() {
     assert_eq!(lines[8], "no-missing-tool");
     assert_eq!(lines[9], "yes unset");
     assert_eq!(lines[10], "same-path", "a nested bash keeps PATH as it is");
+}
+
+/// bash on Windows, in Git Bash, MSYS2 and Cygwin: the environment as for
+/// bash elsewhere, `[tool]` commands found without `.exe`, rebuilds from
+/// bash, which runs the native binary with paths it must take as they are
+/// (Cygwin doesn't convert arguments), and a quiet start without the binary.
+/// bash's HOME is the sandbox, as `/c/...` or `/cygdrive/c/...`, so results
+/// are compared with what bash says it is.
+#[cfg(windows)]
+#[test]
+fn windows_bash_end_to_end() {
+    for bash in WINDOWS_BASHES {
+        if !has(bash) {
+            eprintln!("{bash} not installed, skipping");
+            continue;
+        }
+        let sb = Sandbox::installed();
+        let (out, err) = sb.shell(
+            bash,
+            r#"printf '%s\n' "$HOME" "$GOPATH" "$TRICKY" "$PATH"; alias greet; alias over; alias missing_tool 2>/dev/null || echo no-missing-tool; echo "${FROM_TOOL:-unset} ${NOT_SET:-unset}"; [[ $("$BASH" -i -c 'echo "$PATH"' 2>/dev/null) == "$PATH" ]] && echo same-path"#,
+        );
+        assert_eq!(err, "", "{bash}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 9, "{bash}: {out}");
+        let h = lines[0];
+        assert_eq!(lines[1], format!("{h}/go"), "{bash}");
+        assert_eq!(lines[2], "it's \"q\" $x `y` (z) {w}", "{bash}");
+        assert!(
+            lines[3].starts_with(&format!("{h}/go/bin:/usr/bin:")),
+            "{bash}: {}",
+            lines[3]
+        );
+        assert!(
+            lines[3].ends_with(":/opt/shellsync-test"),
+            "{bash}: {}",
+            lines[3]
+        );
+        assert_eq!(
+            format!(":{}:", lines[3]).matches(":/usr/bin:").count(),
+            1,
+            "{bash}: deduplicated"
+        );
+        assert_eq!(lines[4], "alias greet='echo hello'", "{bash}");
+        assert_eq!(
+            lines[5], "alias over='echo tool'",
+            "{bash}: `where` is found as where.exe"
+        );
+        assert_eq!(lines[6], "no-missing-tool", "{bash}");
+        assert_eq!(lines[7], "yes unset", "{bash}");
+        assert_eq!(lines[8], "same-path", "{bash}");
+
+        // Edits, and errors that keep the last good build.
+        let print = |sb: &Sandbox| sb.shell(bash, r#"echo "${GOPATH#$HOME}""#);
+        sb.edit_config("[env]\nGOPATH = '~/elsewhere'\n");
+        assert_eq!(print(&sb).0, "/elsewhere", "{bash}");
+        sb.edit_config("[env\n");
+        let (out, err) = print(&sb);
+        assert_eq!(out, "/elsewhere", "{bash}");
+        assert!(err.contains("shellsync.toml"), "{bash}: {err}");
+        sb.edit_config("[env]\nGOPATH = '~/fixed'\n");
+        assert_eq!(print(&sb).0, "/fixed", "{bash}");
+
+        // Without the binary and the generated files, bash starts quietly.
+        let sb = Sandbox::new();
+        let exe = sb.dir.join("bin/shellsync.exe");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::copy(BIN, &exe).unwrap();
+        sb.install(exe.to_str().unwrap());
+        fs::remove_file(&exe).unwrap();
+        fs::remove_dir_all(sb.out_dir()).unwrap();
+        let (out, err) = sb.shell(bash, "echo started");
+        assert_eq!(out, "started", "{bash}: {err}");
+        assert_eq!(err, "", "{bash}");
+    }
 }
 
 /// A `[tool]` command must be a file that can run, as at build time: a file
@@ -681,13 +774,23 @@ fn check(sb: &Sandbox, config: &str, path: &str) -> (bool, String, String) {
 
 #[test]
 fn check_parses_the_code_with_each_shell() {
-    let sh = !cfg!(windows);
-    if (sh && (!has("zsh") || !has("bash"))) || !has("nu") || !has("pwsh") {
+    let zsh = !cfg!(windows);
+    // On Windows Git Bash, which isn't on PATH by itself.
+    let bash = if cfg!(windows) {
+        WINDOWS_BASHES[0]
+    } else {
+        "bash"
+    };
+    if (zsh && !has("zsh")) || !has(bash) || !has("nu") || !has("pwsh") {
         eprintln!("a shell is not installed, skipping");
         return;
     }
     let sb = Sandbox::new();
-    let path = std::env::var("PATH").unwrap_or_default();
+    let mut path = std::env::var("PATH").unwrap_or_default();
+    if cfg!(windows) {
+        let dir = Path::new(bash).parent().unwrap();
+        path = format!("{};{path}", dir.display());
+    }
 
     let broken = r#"
 [aliases]
@@ -706,24 +809,24 @@ pwsh.init = "if ($true) {"
 "#;
     let (ok, out, err) = check(&sb, broken, &path);
     assert!(!ok);
-    if sh {
+    if zsh {
         assert_eq!(err, "shellsync: 6 parse errors\n");
         assert!(
             out.contains("\nzsh: 2 errors\n  aliases.quote:1: "),
             "{out}"
         );
         assert!(out.contains("\n  tool.c.sh.init:3: parse error"), "{out}");
-        assert!(
-            out.contains("\nbash: 2 errors\n  aliases.quote: line 1: "),
-            "{out}"
-        );
-        assert!(
-            out.contains("\n  tool.c.sh.init: line 3: syntax error"),
-            "{out}"
-        );
     } else {
-        assert_eq!(err, "shellsync: 2 parse errors\n");
+        assert_eq!(err, "shellsync: 4 parse errors\n");
     }
+    assert!(
+        out.contains("\nbash: 2 errors\n  aliases.quote: line 1: "),
+        "{out}"
+    );
+    assert!(
+        out.contains("\n  tool.c.sh.init: line 3: syntax error"),
+        "{out}"
+    );
     assert!(out.contains("\nnu: 1 error\n  aliases.piped:\n"), "{out}");
     assert!(out.contains("Can't create alias to expression"), "{out}");
     assert!(
@@ -740,7 +843,11 @@ nu.init = "let shared = 1"
 exists = "/"
 nu.init = "print $shared"
 "#;
-    let sh_lines = if sh { "zsh: ok\nbash: ok\n" } else { "" };
+    let sh_lines = if zsh {
+        "zsh: ok\nbash: ok\n"
+    } else {
+        "bash: ok\n"
+    };
     for config in [in_context, &config()] {
         let (ok, out, err) = check(&sb, config, &path);
         assert!(ok, "{out}{err}");
@@ -829,6 +936,35 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
     }
 }
 
+/// `build` parses the generated code, which may hold secrets from the
+/// config, in shellsync's own cache directory, not in the temp directory:
+/// that may not be writable, or, as `/tmp` in MSYS2 and Cygwin, readable by
+/// other users.
+#[test]
+fn build_does_not_use_the_temp_dir() {
+    let sb = Sandbox::new();
+    sb.edit_config(&config());
+    let missing = sb.dir.join("no-such-temp-dir");
+    let mut c = sb.cmd(BIN);
+    c.env("TMPDIR", &missing)
+        .env("TMP", &missing)
+        .env("TEMP", &missing)
+        .args(["build", "--config"])
+        .arg(sb.config());
+    run(c);
+    assert!(sb.out_dir().join("init.bash").exists());
+    let left: Vec<_> = fs::read_dir(sb.out_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|name| {
+            !name.to_string_lossy().starts_with("init.")
+                && !name.to_string_lossy().starts_with("env.")
+                && name != "tools.nu"
+        })
+        .collect();
+    assert!(left.is_empty(), "left behind: {left:?}");
+}
+
 /// Synced dotfiles can carry the hooks to a machine where the binary is
 /// missing or has moved. Shells must still start, without error output.
 #[test]
@@ -869,6 +1005,11 @@ fn install_is_idempotent_and_uninstall_restores() {
         c.arg(arg);
         run(c)
     };
+    // On Windows, `.bashrc` is hooked only if it exists.
+    let bashrc = sb.dir.join(".bashrc");
+    if cfg!(windows) {
+        fs::write(&bashrc, "# mine\n").unwrap();
+    }
     let hooks: Vec<PathBuf> = sb
         .assert_inside(&shellsync("paths"))
         .into_iter()
@@ -879,7 +1020,7 @@ fn install_is_idempotent_and_uninstall_restores() {
         })
         .map(|(_, path)| path)
         .collect();
-    let expected = if cfg!(windows) { 3 } else { 6 };
+    let expected = if cfg!(windows) { 4 } else { 6 };
     assert_eq!(hooks.len(), expected, "{hooks:?}");
     let profile = hooks.last().unwrap();
     fs::create_dir_all(profile.parent().unwrap()).unwrap();
@@ -901,6 +1042,9 @@ fn install_is_idempotent_and_uninstall_restores() {
 
     shellsync("uninstall");
     assert_eq!(fs::read_to_string(profile).unwrap(), "$env:KEEP = 1\n");
+    if cfg!(windows) {
+        assert_eq!(fs::read_to_string(&bashrc).unwrap(), "# mine\n");
+    }
     for text in read() {
         assert!(!text.contains("shellsync"));
     }

@@ -225,8 +225,8 @@ fn ask_pwsh() -> Option<PathBuf> {
 /// Parses with PowerShell's own parser and prints each error as
 /// `file:line:column: message`. Most of the time is PowerShell's start.
 /// (No cmdlets, see above.)
-pub fn syntax_check(file: &str) -> Command {
-    let mut c = Command::new("pwsh");
+pub fn syntax_check(exe: &Path, file: &str) -> Command {
+    let mut c = Command::new(exe);
     c.args([
         "-NoProfile",
         "-NonInteractive",

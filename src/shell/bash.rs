@@ -1,11 +1,13 @@
 //! bash: generated code, and the hook in `.bashrc`. The generated code runs
-//! in bash 3.2, which macOS still ships.
+//! in bash 3.2, which macOS still ships, and on Windows in Git Bash, MSYS2
+//! and Cygwin.
 
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::Dialect;
-use super::zsh::{path_word, quote, template_word};
+use super::zsh::{quote, template_word};
+use super::{Dialect, home_relative};
 use crate::Paths;
 use crate::config::Condition;
 
@@ -80,10 +82,23 @@ impl Dialect for Bash {
 /// `-n` parses without running. `extglob` is on because init code that
 /// turns it on with `shopt` parses fine when sourced, line by line, but not
 /// in one piece without it.
-pub fn syntax_check(file: &str) -> Command {
-    let mut c = Command::new("bash");
+pub fn syntax_check(exe: &Path, file: &str) -> Command {
+    let mut c = Command::new(exe);
     c.args(["-O", "extglob", "-n", file]);
     c
+}
+
+/// A path as a bash word in the hook, relative to the home directory where
+/// possible. On Windows that is the user profile, where shellsync's files
+/// are, while bash's `HOME` may be elsewhere (MSYS2 and Cygwin have their
+/// own); bash and the programs it starts take `C:\...` paths as they are,
+/// which Cygwin would not convert from its own form.
+fn path_word(p: &Path, home: &Path) -> String {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    match home_relative(p, home) {
+        Some(rel) => template_word(&format!("${var}/{}", rel.replace('$', "$$"))),
+        None => quote(&p.display().to_string()),
+    }
 }
 
 /// The hook body for `.bashrc`. Only interactive shells rebuild, so `ssh
@@ -111,8 +126,29 @@ pub fn rc_hook(paths: &Paths, exe: &Path, home: &Path) -> String {
 
 /// `.bashrc`, which interactive bash reads. Login shells read
 /// `.bash_profile` (or `.profile`) instead, which usually sources it.
+///
+/// On Windows, bash's home: MSYS2 and Cygwin have their own, which they pass
+/// to the programs they start as `HOME`; Git Bash uses the user profile.
 pub fn rc_file() -> PathBuf {
-    crate::home().join(".bashrc")
+    let home = match env::var_os("HOME") {
+        Some(home) if cfg!(windows) => PathBuf::from(home),
+        _ => crate::home(),
+    };
+    home.join(".bashrc")
+}
+
+/// Whether `exe` is WSL's `bash.exe` (in the Windows folder, or an app alias
+/// in WindowsApps), which would parse in Linux, if WSL is set up at all.
+pub fn is_wsl_launcher(exe: &Path) -> bool {
+    let windir = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    cfg!(windows) && wsl_launcher_in(exe, &windir)
+}
+
+fn wsl_launcher_in(exe: &Path, windir: &str) -> bool {
+    let exe = exe.to_string_lossy().to_lowercase().replace('/', "\\");
+    let windir = windir.to_lowercase().replace('/', "\\");
+    exe.starts_with(&format!("{}\\", windir.trim_end_matches('\\')))
+        || exe.contains("\\windowsapps\\")
 }
 
 #[cfg(test)]
@@ -133,6 +169,42 @@ while [[ -n $__shellsync_rest ]]; do
 done
 export PATH=$__shellsync_path
 unset __shellsync_rest __shellsync_path __shellsync_dir"#;
+
+    /// shellsync's files are in the user profile, which bash's HOME may not
+    /// be (MSYS2, Cygwin); Windows paths work in bash and as arguments.
+    #[cfg(windows)]
+    #[test]
+    fn hook_paths_use_the_user_profile() {
+        let home = Path::new(r"C:\Users\me");
+        let paths = Paths {
+            config: home.join(r".config\shellsync\config.toml"),
+            out_dir: home.join(r".cache\shellsync"),
+        };
+        let exe = Path::new(r"C:\Program Files\shellsync\shellsync.exe");
+        let hook = rc_hook(&paths, exe, home);
+        assert!(
+            hook.contains(r#"cfg="${USERPROFILE}/.config/shellsync/config.toml" "#),
+            "{hook}"
+        );
+        assert!(
+            hook.contains(r"local exe='C:\Program Files\shellsync\shellsync.exe' "),
+            "{hook}"
+        );
+    }
+
+    #[test]
+    fn finds_the_wsl_launcher() {
+        let windir = r"C:\WINDOWS";
+        let is = |exe: &str| wsl_launcher_in(Path::new(exe), windir);
+        assert!(is(r"C:\Windows\System32\bash.exe"));
+        assert!(is(r"c:/windows/system32/bash.exe"));
+        assert!(is(
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\bash.exe"
+        ));
+        assert!(!is(r"C:\Program Files\Git\bin\bash.exe"));
+        assert!(!is(r"C:\msys64\usr\bin\bash.exe"));
+        assert!(!is(r"C:\Windows2\bash.exe"));
+    }
 
     #[test]
     fn renders() {

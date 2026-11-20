@@ -61,37 +61,45 @@ impl Probe {
     /// Whether `condition` holds now, looking up commands in `path`.
     pub fn holds(&self, condition: &Condition, path: &[PathBuf]) -> bool {
         match condition {
-            Condition::Command(name) => {
-                let name = self.expand(name);
-                path.iter().any(|dir| self.is_executable(&dir.join(&name)))
-            }
-            Condition::Executable(p) => self.is_executable(Path::new(&self.expand(p))),
+            Condition::Command(name) => self.find(&self.expand(name), path).is_some(),
+            Condition::Executable(p) => self.executable(Path::new(&self.expand(p))).is_some(),
             Condition::Exists(p) => Path::new(&self.expand(p)).exists(),
         }
     }
 
-    /// Whether a file at `p` can run. On Windows that's a file whose extension
-    /// is in PATHEXT, named with or without it, as the shells find commands.
+    /// The file the command `name` runs, looked up in `path`.
+    pub fn find(&self, name: &str, path: &[PathBuf]) -> Option<PathBuf> {
+        path.iter().find_map(|dir| self.executable(&dir.join(name)))
+    }
+
+    /// The file at `p`, if it can run. On Windows that's a file whose
+    /// extension is in PATHEXT, named with or without it, as the shells find
+    /// commands.
     #[cfg(unix)]
-    fn is_executable(&self, p: &Path) -> bool {
+    fn executable(&self, p: &Path) -> Option<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        std::fs::metadata(p)
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .then(|| p.to_path_buf())
     }
 
     #[cfg(windows)]
-    fn is_executable(&self, p: &Path) -> bool {
+    fn executable(&self, p: &Path) -> Option<PathBuf> {
         let pathext = (self.var)("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
         let exts: Vec<&str> = pathext.split(';').filter(|e| !e.is_empty()).collect();
         let has_ext = p.extension().is_some_and(|e| {
             let e = format!(".{}", e.to_string_lossy());
             exts.iter().any(|x| x.eq_ignore_ascii_case(&e))
         });
-        (has_ext && p.is_file())
-            || exts.iter().any(|ext| {
-                let mut with_ext = p.as_os_str().to_owned();
-                with_ext.push(ext);
-                Path::new(&with_ext).is_file()
-            })
+        if has_ext && p.is_file() {
+            return Some(p.to_path_buf());
+        }
+        exts.iter().find_map(|ext| {
+            let mut with_ext = p.as_os_str().to_owned();
+            with_ext.push(ext);
+            let with_ext = PathBuf::from(with_ext);
+            with_ext.is_file().then_some(with_ext)
+        })
     }
 }
 
@@ -145,6 +153,13 @@ mod tests {
         assert!(holds(Condition::Exists("$D".into())), "directories count");
         assert!(!holds(Condition::Exists("$D/missing".into())));
         assert!(!probe.holds(&Condition::Command("tool".into()), &[]));
+        // On Windows with PATHEXT's case, which the file system ignores.
+        let found = probe
+            .find("tool", &[PathBuf::from("/shellsync/missing"), dir.clone()])
+            .unwrap();
+        assert_eq!(found.parent(), Some(dir.as_path()));
+        let name = found.file_name().unwrap().to_string_lossy();
+        assert!(name.eq_ignore_ascii_case(&format!("tool{EXE}")), "{name}");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -77,7 +77,7 @@ pub fn template_word(s: &str) -> String {
 }
 
 /// A path as a zsh word, relative to `$HOME` where possible.
-pub(super) fn path_word(p: &Path, home: &Path) -> String {
+fn path_word(p: &Path, home: &Path) -> String {
     match home_relative(p, home) {
         Some(rel) => template_word(&format!("~/{}", rel.replace('$', "$$"))),
         None => quote(&p.display().to_string()),
@@ -85,8 +85,8 @@ pub(super) fn path_word(p: &Path, home: &Path) -> String {
 }
 
 /// `-n` parses without running; `-f` skips the user's startup files.
-pub fn syntax_check(file: &str) -> Command {
-    let mut c = Command::new("zsh");
+pub fn syntax_check(exe: &Path, file: &str) -> Command {
+    let mut c = Command::new(exe);
     c.args(["-f", "-n", file]);
     c
 }

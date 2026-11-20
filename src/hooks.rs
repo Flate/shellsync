@@ -66,15 +66,18 @@ impl HookFile {
     }
 }
 
-/// Where each hook goes on this machine, for the shells native to it.
+/// Where each hook goes on this machine, for the shells native to it. On
+/// Windows, `.bashrc` only if it exists: most Windows users have no bash,
+/// and Git Bash, MSYS2 and Cygwin each have their own.
 pub fn files() -> Vec<(HookFile, PathBuf)> {
     let mut files = Vec::new();
     if Shell::Zsh.native() {
         files.push((HookFile::Zshenv, zsh::env_file()));
         files.push((HookFile::Zshrc, zsh::rc_file()));
     }
-    if Shell::Bash.native() {
-        files.push((HookFile::Bashrc, bash::rc_file()));
+    let bashrc = bash::rc_file();
+    if !cfg!(windows) || bashrc.exists() {
+        files.push((HookFile::Bashrc, bashrc));
     }
     let (nu_env, nu_config) = nu::config_files();
     files.push((HookFile::NuEnv, nu_env));
@@ -200,18 +203,20 @@ mod tests {
                  {END}\n"
             )
         );
+        // bash on Windows: the user profile, see `bash::path_word`.
+        let h = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         assert_eq!(
             HookFile::Bashrc.block(&paths, exe, home),
             format!(
                 "{BEGIN}\n\
                  __shellsync_build() {{\n  \
-                 local exe=\"${{HOME}}/.cargo/bin/shellsync\" cfg=\"${{HOME}}/.config/shellsync/config.toml\" out=\"${{HOME}}/.cache/shellsync/init.bash\"\n  \
+                 local exe=\"${{{h}}}/.cargo/bin/shellsync\" cfg=\"${{{h}}}/.config/shellsync/config.toml\" out=\"${{{h}}}/.cache/shellsync/init.bash\"\n  \
                  if [[ $- == *i* && -x $exe && ( ! -e $out || ( -e $cfg && ( $cfg -nt $out || $out -nt $cfg ) ) ) ]]; then\n    \
-                 \"$exe\" build --config \"$cfg\" --out-dir \"${{HOME}}/.cache/shellsync\"\n  \
+                 \"$exe\" build --config \"$cfg\" --out-dir \"${{{h}}}/.cache/shellsync\"\n  \
                  fi\n\
                  }}\n\
                  __shellsync_build; unset -f __shellsync_build\n\
-                 [[ -r \"${{HOME}}/.cache/shellsync/init.bash\" ]] && source \"${{HOME}}/.cache/shellsync/init.bash\"\n\
+                 [[ -r \"${{{h}}}/.cache/shellsync/init.bash\" ]] && source \"${{{h}}}/.cache/shellsync/init.bash\"\n\
                  {END}\n"
             )
         );

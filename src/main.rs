@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::SystemTime;
 
-use config::{Condition, Config, Entries};
+use config::{Config, Entries};
 use hooks::HookFile;
 use probe::Probe;
 use shell::{Checks, Shell};
@@ -312,7 +312,7 @@ fn build(paths: &Paths, if_stale: bool, nu_tools: Option<&[String]>) -> Result<b
         None => Checks::Now(&probe),
     };
     let files = generate(&cfg, &source, &checks);
-    let failed: String = parse_all(&cfg, &files)?
+    let failed: String = parse_all(&cfg, &files, &paths.out_dir)?
         .into_iter()
         .filter_map(|(shell, errors)| match errors {
             Some(errors) if !errors.is_empty() => Some(report(shell, &errors)),
@@ -356,7 +356,7 @@ fn check(paths: &Paths) -> Result {
     let all: Vec<String> = cfg.tools.iter().map(|t| t.name.clone()).collect();
     let files = generate(&cfg, "check", &Checks::Found(&all));
     let mut count = 0;
-    for (shell, errors) in parse_all(&cfg, &files)? {
+    for (shell, errors) in parse_all(&cfg, &files, &paths.out_dir)? {
         match errors {
             Some(errors) => {
                 count += errors.len();
@@ -377,13 +377,14 @@ fn check(paths: &Paths) -> Result {
 type ParseError = (String, String);
 
 /// Parses the generated `files` with the shell each is for, for the shells
-/// native to this platform. Returns each shell's errors, or None if the
-/// shell isn't installed.
+/// native to this platform, in a directory made in `out_dir`. Returns each
+/// shell's errors, or None if the shell isn't installed.
 fn parse_all(
     cfg: &Config,
     files: &[(Shell, &str, String)],
+    out_dir: &Path,
 ) -> Result<Vec<(Shell, Option<Vec<ParseError>>)>> {
-    let dir = TempDir::new()?;
+    let dir = TempDir::new(out_dir)?;
     Shell::ALL
         .into_iter()
         .filter(|shell| shell.native())
@@ -398,12 +399,12 @@ fn parse_all(
         .collect()
 }
 
-/// Parses `code` with `shell`, from a file named `name` in `dir`. Returns the
-/// shell's error message if it doesn't parse.
-fn parse(shell: Shell, dir: &Path, name: &str, code: &str) -> Result<Option<String>> {
+/// Parses `code` with `shell` (at `exe`), from a file named `name` in `dir`.
+/// Returns the shell's error message if it doesn't parse.
+fn parse(shell: Shell, exe: &Path, dir: &Path, name: &str, code: &str) -> Result<Option<String>> {
     write_atomic(&dir.join(name), code, None)?;
     let out = shell
-        .syntax_check(name)
+        .syntax_check(exe, name)
         .current_dir(dir)
         .stdin(Stdio::null())
         .output()
@@ -434,14 +435,18 @@ fn parse_shell(
 ) -> Result<Option<Vec<ParseError>>> {
     let sh = shell.name();
     // Looked up here: on Linux, running a missing program can fail like a
-    // program that exits with 127, not with "not found".
+    // program that exits with 127, not with "not found". And on Windows,
+    // `Command` would look in the system folders before PATH.
     let probe = Probe::from_env();
-    if !probe.holds(&Condition::Command(sh.into()), &probe.path_dirs()) {
+    let Some(exe) = probe.find(sh, &probe.path_dirs()) else {
+        return Ok(None);
+    };
+    if shell == Shell::Bash && shell::bash::is_wsl_launcher(&exe) {
         return Ok(None);
     }
     let mut file_errors = Vec::new();
     for (name, text) in files {
-        if let Some(msg) = parse(shell, dir, name, text)? {
+        if let Some(msg) = parse(shell, &exe, dir, name, text)? {
             file_errors.push((
                 format!("{name} (generated, see `shellsync print {sh}`)"),
                 msg,
@@ -455,7 +460,7 @@ fn parse_shell(
             continue;
         }
         let name = format!("snippet-{i}.{sh}");
-        if let Some(msg) = parse(shell, dir, &name, &snippet.code)? {
+        if let Some(msg) = parse(shell, &exe, dir, &name, &snippet.code)? {
             explained |= snippet.in_files;
             errors.push((snippet.key.clone(), msg.replace(&name, &snippet.key)));
         }
@@ -491,12 +496,16 @@ fn report(shell: Shell, errors: &[ParseError]) -> String {
     out
 }
 
-/// A directory only the user can read, removed when dropped.
+/// A directory only the user can read, removed when dropped. It is made in
+/// `parent`, the output directory: the files in it may hold secrets from the
+/// config, and the temp directory may be readable by others (`/tmp` in MSYS2
+/// and Cygwin, without the mode set here on Unix) or not writable at all.
 struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new() -> Result<TempDir> {
-        let dir = env::temp_dir().join(format!("shellsync-{}", std::process::id()));
+    fn new(parent: &Path) -> Result<TempDir> {
+        fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
+        let dir = parent.join(format!(".parse-{}", std::process::id()));
         // A leftover from an earlier process with the same id.
         let _ = fs::remove_dir_all(&dir);
         #[cfg_attr(not(unix), allow(unused_mut))]
