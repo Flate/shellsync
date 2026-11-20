@@ -48,6 +48,7 @@ append = ["/opt/shellsync-test"]
 greet = "echo hello"
 ll = {{ zsh = "ls -lh", nu = "ls -l" }}
 over = "echo base"
+".." = "cd .."
 
 # On PATH everywhere, so this applies and overrides the base alias.
 [tool.{ON_PATH}.aliases]
@@ -644,7 +645,8 @@ fn pwsh_end_to_end() {
         "pwsh",
         "$env:GOPATH; $env:TRICKY; [bool]$env:ONLY_ZSH; $env:PATH; greet; over; \
          [bool](Get-Command missing_tool -ErrorAction Ignore); $env:FROM_TOOL; \
-         [bool]$env:NOT_SET; [bool]$env:FOR_SH; [bool](Get-Command ll -ErrorAction Ignore)",
+         [bool]$env:NOT_SET; [bool]$env:FOR_SH; [bool](Get-Command ll -ErrorAction Ignore); \
+         [bool](Get-Command .. -ErrorAction Ignore)",
     );
     assert_eq!(err, "");
     let lines: Vec<&str> = out.lines().collect();
@@ -677,6 +679,7 @@ fn pwsh_end_to_end() {
     assert_eq!(lines[8], "False", "path doesn't exist");
     assert_eq!(lines[9], "False", "`sh` doesn't cover pwsh");
     assert_eq!(lines[10], "False", "no pwsh value");
+    assert_eq!(lines[11], "True", "an alias named ..");
 }
 
 /// A symlinked config (dotfiles linked into place) must not look changed at

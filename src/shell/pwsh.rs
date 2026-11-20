@@ -93,12 +93,16 @@ impl Dialect for Pwsh {
     /// PowerShell aliases can't take arguments, so an alias becomes a function
     /// that appends its arguments, as a zsh alias does. Aliases take
     /// precedence over functions, so a built-in alias of the same name (such
-    /// as `gc`) is removed first.
+    /// as `gc`) is removed first. Both go through the provider with a literal
+    /// path: `${alias:..}` fails for names that aren't valid paths otherwise,
+    /// and `InvokeCommand.GetCommand` costs about 5 ms per alias. Names can't
+    /// contain quotes (see `config`), so they can go into single quotes as
+    /// they are.
     fn alias(name: &str, body: &str) -> String {
+        let body = body.trim();
         format!(
-            "if (${{alias:{name}}}) {{ $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\\{name}', $false, $true, $true) }}\n\
-             function {name} {{ {} @args }}\n",
-            body.trim()
+            "if ($ExecutionContext.SessionState.InvokeProvider.Item.Exists('Alias:\\{name}', $false, $true)) {{ $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\\{name}', $false, $true, $true) }}\n\
+             function {name} {{ {body} @args }}\n"
         )
     }
 
@@ -285,6 +289,7 @@ mod tests {
             append = ["/opt/bin"]
             [aliases]
             g = "git"
+            ".." = "cd .."
             [pwsh]
             init = "Set-PSReadLineOption -EditMode Emacs"
         "#;
@@ -301,8 +306,11 @@ mod tests {
             [
                 r#"$env:GOPATH = "${HOME}/go""#,
                 &path,
-                r"if (${alias:g}) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\g', $false, $true, $true) }",
+                r"if ($ExecutionContext.SessionState.InvokeProvider.Item.Exists('Alias:\g', $false, $true)) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\g', $false, $true, $true) }",
                 "function g { git @args }",
+                // `${alias:..}` would fail at runtime: `..` isn't a valid path there.
+                r"if ($ExecutionContext.SessionState.InvokeProvider.Item.Exists('Alias:\..', $false, $true)) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\..', $false, $true, $true) }",
+                "function .. { cd .. @args }",
                 "",
                 "# --- init ---",
                 "Set-PSReadLineOption -EditMode Emacs",
@@ -326,7 +334,7 @@ mod tests {
             "",
             "# tool: eza",
             r#"if ((& $__shellsync_command "eza")) {"#,
-            r"if (${alias:ls}) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\ls', $false, $true, $true) }",
+            r"if ($ExecutionContext.SessionState.InvokeProvider.Item.Exists('Alias:\ls', $false, $true)) { $ExecutionContext.SessionState.InvokeProvider.Item.Remove([string[]]'Alias:\ls', $false, $true, $true) }",
             "function ls { eza @args }",
             "}",
             "",
