@@ -8,6 +8,7 @@
 - Tests pass on the Windows runner (pwsh 7.6.10, nu 0.117.0, Git Bash 5.3, MSYS2 bash 5.3, Cygwin bash 5.2; run over SSH as `gitlab-ci`)
 - GitLab CI pipeline passes on GitLab, including `test:windows` and the release jobs
 - Released 0.1.0 (`v0.1.0`): binaries and `SHA256SUMS` in the package registry, which anyone can download from
+- Installed through the dotfiles (`flate/dotfiles-new`, merged in !16) on the Mac, the Linux users and TrueNAS' `truenas_admin` (binary placed by hand there)
 - Shells start normally when the binary or the generated files are missing
 
 ## In progress
@@ -20,11 +21,11 @@ Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissio
 
 ## Next steps
 
-1. Dotfiles (`flate/dotfiles-new`, branch `feature/shellsync`): shared config, hooks for all four shells, binary via chezmoi external, pinned to 0.1.0; merge once its pipeline passes. `truenas_admin` needs the binary in `/mnt/Private/bin/.local/bin` by hand
+- None planned
 
 ## Constraints
 
-- Not installed on any machine yet: no backward compatibility needed for hooks, outputs or config format
+- Compatibility follows semver from 0.1.0 on: incompatible changes (config, hooks, generated files) only with a new minor version and a changelog entry; configs written for an older version stay readable (see `CLAUDE.md`)
 
 ## Open decisions
 
