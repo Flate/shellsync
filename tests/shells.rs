@@ -39,6 +39,7 @@ GOPATH = "~/go"
 TRICKY = "it's \"q\" $$x `y` (z) {{w}}"
 ONLY_ZSH = {{ zsh = "z" }}
 FOR_SH = {{ sh = "s" }}
+FOR_PS = {{ ps = "p" }}
 
 [path]
 prepend = ["$GOPATH/bin", "/usr/bin"]
@@ -72,6 +73,10 @@ env.NOT_SET = "no"
 
 fn has(shell: &str) -> bool {
     if cfg!(windows) && matches!(shell, "zsh" | "bash") {
+        return false;
+    }
+    // Windows PowerShell 5.1.
+    if !cfg!(windows) && shell == "powershell" {
         return false;
     }
     let found = Command::new(shell)
@@ -213,12 +218,13 @@ impl Sandbox {
     }
 
     /// Where the Windows sandbox keeps the hooks.
-    fn hook_files(&self) -> [(&'static str, PathBuf); 4] {
+    fn hook_files(&self) -> [(&'static str, PathBuf); 5] {
         [
             ("nu-env", self.dir.join("nu/env.nu")),
             ("nu-config", self.dir.join("nu/config.nu")),
             ("pwsh", self.dir.join("pwsh/profile.ps1")),
             ("bashrc", self.dir.join(".bashrc")),
+            ("powershell", self.dir.join("powershell/profile.ps1")),
         ]
     }
 
@@ -283,8 +289,16 @@ impl Sandbox {
                 c.args(["-c", code]);
             }
             "pwsh" if cfg!(windows) => {
-                let [_, _, (_, profile), _] = self.hook_files();
+                let [_, _, (_, profile), ..] = self.hook_files();
                 let code = format!(". '{}'; {code}", profile.display());
+                c.args(["-NoProfile", "-NonInteractive", "-Command", &code]);
+            }
+            "powershell" => {
+                let [.., (_, profile)] = self.hook_files();
+                let code = format!(". '{}'; {code}", profile.display());
+                // Windows PowerShell runs no scripts by default; users with a
+                // profile have allowed local ones, usually like this.
+                c.args(["-ExecutionPolicy", "RemoteSigned"]);
                 c.args(["-NoProfile", "-NonInteractive", "-Command", &code]);
             }
             "pwsh" => {
@@ -648,7 +662,7 @@ fn pwsh_end_to_end() {
         "$env:GOPATH; $env:TRICKY; [bool]$env:ONLY_ZSH; $env:PATH; greet; over; \
          [bool](Get-Command missing_tool -ErrorAction Ignore); $env:FROM_TOOL; \
          [bool]$env:NOT_SET; [bool]$env:FOR_SH; [bool](Get-Command ll -ErrorAction Ignore); \
-         [bool](Get-Command .. -ErrorAction Ignore); whoami",
+         [bool](Get-Command .. -ErrorAction Ignore); whoami; $env:FOR_PS",
     );
     assert_eq!(err, "");
     let lines: Vec<&str> = out.lines().collect();
@@ -686,6 +700,59 @@ fn pwsh_end_to_end() {
         !lines[12].is_empty(),
         "an alias that runs the program of its name"
     );
+    assert_eq!(lines[13], "p", "`ps` covers pwsh");
+}
+
+/// Windows PowerShell 5.1, on Windows only.
+#[test]
+fn powershell_end_to_end() {
+    if !has("powershell") {
+        eprintln!("Windows PowerShell not installed, skipping");
+        return;
+    }
+    let sb = Sandbox::new();
+    sb.install(BIN);
+    // Not ASCII: Windows PowerShell reads the generated file as UTF-8 only
+    // because of its byte order mark.
+    sb.edit_config(&format!(
+        "{}\n[tool.unicode]\nexists = \"/\"\nenv.UNICODE = \"\\u00e4 \\u2192 \\U0001F980\"\n",
+        config()
+    ));
+    let (out, err) = sb.shell(
+        "powershell",
+        "$PSVersionTable.PSEdition; $env:GOPATH; $env:TRICKY; [bool]$env:ONLY_ZSH; $env:PATH; \
+         greet; over; [bool](Get-Command missing_tool -ErrorAction Ignore); $env:FROM_TOOL; \
+         [bool]$env:NOT_SET; [bool]$env:FOR_SH; [bool](Get-Command ll -ErrorAction Ignore); \
+         [bool](Get-Command .. -ErrorAction Ignore); $env:FOR_PS; \
+         [int[]][char[]]$env:UNICODE -join ','",
+    );
+    assert_eq!(err, "");
+    let lines: Vec<&str> = out.lines().collect();
+    let h = sb.home.display();
+    assert_eq!(lines[0], "Desktop", "Windows PowerShell, not pwsh");
+    assert_eq!(lines[1], format!("{h}/go"));
+    assert_eq!(lines[2], "it's \"q\" $x `y` (z) {w}");
+    assert_eq!(lines[3], "False", "zsh only");
+    assert!(
+        lines[4].starts_with(&format!("{h}/go/bin;/usr/bin;")),
+        "{}",
+        lines[4]
+    );
+    assert!(lines[4].ends_with(";/opt/shellsync-test"), "{}", lines[4]);
+    assert_eq!(lines[4].matches(";/usr/bin;").count(), 1, "deduplicated");
+    assert_eq!(lines[5], "hello");
+    assert_eq!(
+        lines[6], "tool",
+        "the [tool] alias overrides the base alias"
+    );
+    assert_eq!(lines[7], "False", "tool not installed");
+    assert_eq!(lines[8], "yes");
+    assert_eq!(lines[9], "False", "path doesn't exist");
+    assert_eq!(lines[10], "False", "`sh` doesn't cover powershell");
+    assert_eq!(lines[11], "False", "no powershell value");
+    assert_eq!(lines[12], "True", "an alias named ..");
+    assert_eq!(lines[13], "p", "`ps` covers powershell");
+    assert_eq!(lines[14], "228,32,8594,32,55358,56704");
 }
 
 /// A symlinked config (dotfiles linked into place) must not look changed at
@@ -800,7 +867,14 @@ fn check_parses_the_code_with_each_shell() {
     } else {
         "bash"
     };
-    if (zsh && !has("zsh")) || !has(bash) || !has("nu") || !has("pwsh") {
+    // Windows PowerShell 5.1.
+    let ps5 = cfg!(windows);
+    if (zsh && !has("zsh"))
+        || !has(bash)
+        || !has("nu")
+        || !has("pwsh")
+        || (ps5 && !has("powershell"))
+    {
         eprintln!("a shell is not installed, skipping");
         return;
     }
@@ -825,6 +899,7 @@ if true; then
   echo x
 """
 pwsh.init = "if ($true) {"
+powershell.init = "if ($true) {"
 "#;
     let (ok, out, err) = check(&sb, broken, &path);
     assert!(!ok);
@@ -836,7 +911,11 @@ pwsh.init = "if ($true) {"
         );
         assert!(out.contains("\n  tool.c.sh.init:3: parse error"), "{out}");
     } else {
-        assert_eq!(err, "shellsync: 4 parse errors\n");
+        assert_eq!(err, "shellsync: 5 parse errors\n");
+        assert!(
+            out.contains("\npowershell: 1 error\n  tool.c.powershell.init:1:"),
+            "{out}"
+        );
     }
     assert!(
         out.contains("\nbash: 2 errors\n  aliases.quote: line 1: "),
@@ -867,11 +946,12 @@ nu.init = "print $shared"
     } else {
         "bash: ok\n"
     };
+    let ps5_line = if ps5 { "powershell: ok\n" } else { "" };
     for config in [in_context, &config()] {
         let (ok, out, err) = check(&sb, config, &path);
         assert!(ok, "{out}{err}");
         assert!(
-            out.ends_with(&format!("\n{sh_lines}nu: ok\npwsh: ok\n")),
+            out.ends_with(&format!("\n{sh_lines}nu: ok\npwsh: ok\n{ps5_line}")),
             "{out}"
         );
     }
@@ -911,6 +991,7 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
         ("bash", r#"echo "$GOPATH""#),
         ("nu", "print $env.GOPATH"),
         ("pwsh", "$env:GOPATH"),
+        ("powershell", "$env:GOPATH"),
     ] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
@@ -938,7 +1019,7 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
         // So does valid TOML with code the shells can't parse; in nushell it
         // would stop the whole config from loading.
         sb.edit_config(
-            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { sh = \"echo 'open\", nu = \"ls | sort\", pwsh = \"echo (\" }\n",
+            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { sh = \"echo 'open\", nu = \"ls | sort\", pwsh = \"echo (\", powershell = \"echo (\" }\n",
         );
         let (out, err) = sb.shell(sh, print);
         assert_eq!(out, "/elsewhere", "{sh}: {err}");
@@ -978,6 +1059,7 @@ fn build_does_not_use_the_temp_dir() {
         .filter(|name| {
             !name.to_string_lossy().starts_with("init.")
                 && !name.to_string_lossy().starts_with("env.")
+                && name != "init-ps5.ps1"
                 && name != "tools.nu"
         })
         .collect();
@@ -1033,7 +1115,7 @@ fn edit_runs_the_editor_or_the_configured_command() {
 /// missing or has moved. Shells must still start, without error output.
 #[test]
 fn shells_start_quietly_without_the_binary() {
-    for sh in ["zsh", "bash", "nu", "pwsh"] {
+    for sh in ["zsh", "bash", "nu", "pwsh", "powershell"] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
             continue;
@@ -1069,26 +1151,41 @@ fn install_is_idempotent_and_uninstall_restores() {
         c.arg(arg);
         run(c)
     };
-    // On Windows, `.bashrc` is hooked only if it exists.
+    // On Windows, `.bashrc` and Windows PowerShell's profile are hooked only
+    // if they exist. (Windows PowerShell finds no Documents folder in the
+    // sandbox, so shellsync falls back to the one in USERPROFILE.)
     let bashrc = sb.dir.join(".bashrc");
+    let ps5_profile = sb.dir.join(r"Documents\WindowsPowerShell\profile.ps1");
     if cfg!(windows) {
         fs::write(&bashrc, "# mine\n").unwrap();
+        fs::create_dir_all(ps5_profile.parent().unwrap()).unwrap();
+        fs::write(&ps5_profile, "# mine too\n").unwrap();
     }
-    let hooks: Vec<PathBuf> = sb
+    let hooks: Vec<(String, PathBuf)> = sb
         .assert_inside(&shellsync("paths"))
         .into_iter()
         .filter(|(name, _)| {
-            ["zsh", "bash", "nu ", "pwsh"]
+            ["zsh", "bash", "nu ", "pwsh", "ps5"]
                 .iter()
                 .any(|s| name.starts_with(s))
         })
-        .map(|(_, path)| path)
         .collect();
-    let expected = if cfg!(windows) { 4 } else { 6 };
+    let expected = if cfg!(windows) { 5 } else { 6 };
     assert_eq!(hooks.len(), expected, "{hooks:?}");
-    let profile = hooks.last().unwrap();
+    if cfg!(windows) {
+        assert_eq!(
+            hooks.last().unwrap(),
+            &("ps5 profile".into(), ps5_profile.clone())
+        );
+    }
+    let profile = &hooks
+        .iter()
+        .find(|(name, _)| name == "pwsh profile")
+        .unwrap()
+        .1;
     fs::create_dir_all(profile.parent().unwrap()).unwrap();
     fs::write(profile, "$env:KEEP = 1\n").unwrap();
+    let hooks: Vec<PathBuf> = hooks.iter().map(|(_, path)| path.clone()).collect();
 
     shellsync("install");
     let read = || -> Vec<String> {
@@ -1108,6 +1205,7 @@ fn install_is_idempotent_and_uninstall_restores() {
     assert_eq!(fs::read_to_string(profile).unwrap(), "$env:KEEP = 1\n");
     if cfg!(windows) {
         assert_eq!(fs::read_to_string(&bashrc).unwrap(), "# mine\n");
+        assert_eq!(fs::read_to_string(&ps5_profile).unwrap(), "# mine too\n");
     }
     for text in read() {
         assert!(!text.contains("shellsync"));

@@ -49,7 +49,8 @@ copy `target/release/shellsync` onto your PATH.
 `install` creates a starter config if you don't have one, builds it, and adds a
 small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`)
 (not on Windows) and `~/.bashrc` (on Windows only if it exists, see below), to
-nushell's `env.nu` and `config.nu`, and to PowerShell's `profile.ps1`.
+nushell's `env.nu` and `config.nu`, to PowerShell's `profile.ps1`, and on
+Windows to Windows PowerShell's `profile.ps1` if it exists (see below).
 Running it again is safe: the block
 is replaced, not duplicated. Paths under your home directory are written as
 `$HOME/...` or `~/...`, so the hooks still work if you sync your dotfiles to a
@@ -61,7 +62,7 @@ files as it was.
 **Dotfiles managed by a tool** such as chezmoi: `install` edits the files in
 place, which the tool would overwrite or report as changed. Instead, put the
 blocks into your templates. `shellsync hook zshenv` (and `zshrc`, `bashrc`,
-`nu-env`, `nu-config`, `pwsh`) prints each one; `--exe` sets where the binary is, for example
+`nu-env`, `nu-config`, `pwsh`, `powershell`) prints each one; `--exe` sets where the binary is, for example
 `shellsync hook zshenv --exe ~/.local/bin/shellsync`, so the blocks don't
 depend on where shellsync ran when you printed them. If the tool also writes
 the config from a template, edits to `config.toml` itself are overwritten on
@@ -84,15 +85,20 @@ command = "chezmoi edit --apply ~/.config/shellsync/config.toml"
   start. PowerShell is slower to start on its
   own (about 170 ms); the hook and the generated code add about 45 ms with ten
   aliases and ten tools, most of it PowerShell's one-time cost for the first
-  code it compiles, which any profile code pays.
+  code it compiles, which any profile code pays. Windows PowerShell 5.1 starts
+  in about 205 ms; there the hook adds about 15 ms, ten aliases about 25 ms,
+  and ten tools that aren't installed about 80 ms, since each one is looked
+  for in every PATH directory with every PATHEXT extension.
 * **Rebuilds happen on their own.** When the config's timestamp differs from the
   cached files', the first shell to start runs `shellsync build` (about 35 ms,
   or about 235 ms with PowerShell installed, most of it the shells parsing the
-  result), then loads the result.
+  result, and on Windows about 200 ms more for Windows PowerShell's), then
+  loads the result.
 * **Output is plain shell code.** The generated files are in
   `~/.cache/shellsync/` (`env.zsh`, `init.zsh`, `init.bash`, `init.nu`,
-  `init.ps1`, and `tools.nu` for nushell's [tool checks](#conditional-entries));
-  `shellsync print zsh` (or `bash`, `nu`, `pwsh`) shows them. Only your user can read them, since the
+  `init.ps1`, `init-ps5.ps1` for Windows PowerShell, and `tools.nu` for
+  nushell's [tool checks](#conditional-entries)); `shellsync print zsh` (or
+  `bash`, `nu`, `pwsh`, `powershell`) shows them. Only your user can read them, since the
   config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
   prints the error with its line number and keeps using the last good build.
@@ -143,8 +149,34 @@ generated code use .NET calls instead of cmdlets such as `Test-Path`, because
 the first use of a cmdlet loads its module, which would add about 100 ms to
 every start.
 
-**Windows**: nushell, PowerShell and bash in Git Bash, MSYS2 or Cygwin are
-supported; zsh isn't. shellsync's own files are where they are on
+**Windows PowerShell 5.1** (`powershell.exe`, part of every Windows) has its
+own key, `powershell`, its own file, `init-ps5.ps1`, and its own profile:
+`Documents\WindowsPowerShell\profile.ps1`, wherever Documents is. It gets the
+same code as PowerShell 7, with aliases as functions and no cmdlets, except
+for what 5.1 lacks. `pwsh` values and `[pwsh] init` don't apply to it, since
+they may use syntax that 5.1 doesn't have, such as `&&`, `??` or `? :`; use
+`ps` for values both PowerShells share (see [per-shell
+values](#config-reference)). A plain string applies to every shell, so on
+Windows a plain alias must parse in 5.1 too.
+
+By default Windows PowerShell runs no scripts, not even a profile, and reports
+an error at every start if one exists. So `install` hooks its profile only if
+the profile is already there. To use shellsync with it, run this in Windows
+PowerShell once, then `shellsync install`:
+
+```powershell
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+New-Item -ItemType File -Force $PROFILE.CurrentUserAllHosts
+```
+
+shellsync writes `init-ps5.ps1` with a byte order mark, since Windows
+PowerShell reads a file without one in the ANSI code page, not as UTF-8.
+If your config is a symlink, the hook can't compare its time on its own:
+.NET Framework can't resolve a link. It then runs `shellsync build
+--if-stale` at every start, which adds about 10 ms.
+
+**Windows**: nushell, PowerShell, Windows PowerShell and bash in Git Bash,
+MSYS2 or Cygwin are supported; zsh isn't. shellsync's own files are where they are on
 other systems, under your user profile: `.config\shellsync\config.toml` and
 `.cache\shellsync\`. They get the profile folder's permissions (you,
 administrators and the system) instead of mode 0600. `install` asks
@@ -185,8 +217,10 @@ config in your user profile. Some things to know:
 | `[zsh]`     | `init = '''...'''`: raw zsh code added at the end of the generated file.                                        |
 | `[bash]`    | `init = '''...'''`: raw bash code added at the end of the generated file.                                       |
 | `[nu]`      | `init = '''...'''`: raw nushell code added at the end of the generated file.                                    |
-| `[pwsh]`    | `init = '''...'''`: raw PowerShell code added at the end of the generated file.                                 |
+| `[pwsh]`    | `init = '''...'''`: raw PowerShell 7 code added at the end of the generated file.                               |
+| `[powershell]` | `init = '''...'''`: raw Windows PowerShell 5.1 code added at the end of the generated file.                  |
 | `[sh]`      | `init = '''...'''`: raw code for zsh and bash, combined with `[zsh]` and `[bash] init` in file order.            |
+| `[ps]`      | `init = '''...'''`: raw code for both PowerShells, combined with `[pwsh]` and `[powershell] init` in file order. |
 | `[tool.X]`  | Any of the above that apply only where a tool is installed; see [Conditional entries](#conditional-entries).    |
 | `[edit]`    | `command = "..."`: what `shellsync edit` runs instead of opening the config, through `sh -c` (Windows: `cmd /C`). |
 
@@ -202,12 +236,13 @@ shell starts, so `"$GOPATH/bin"` becomes `"${GOPATH}/bin"` in zsh and bash,
 special characters are escaped for each shell.
 
 **Per-shell values.** Any value can be a table:
-`{ zsh = "...", bash = "...", nu = "...", pwsh = "..." }`.
+`{ zsh = "...", bash = "...", nu = "...", pwsh = "...", powershell = "..." }`.
 If you leave out a shell, that entry is skipped there. For example,
 `ZSH_AUTOSUGGEST_STRATEGY = { zsh = "history" }` is set only in zsh. The key
 `sh` stands for every shell with POSIX sh syntax, zsh and bash; a shell's own
 key takes precedence, so `{ sh = "ls -l", zsh = "ls -lh" }` gives zsh
-`ls -lh` and bash `ls -l`. TOML 1.1 allows such a table to span several lines:
+`ls -lh` and bash `ls -l`. In the same way `ps` stands for PowerShell 7
+(`pwsh`) and Windows PowerShell 5.1 (`powershell`). TOML 1.1 allows such a table to span several lines:
 
 ```toml
 ll = {
@@ -288,8 +323,8 @@ shellsync install        set up hooks (creates the config if missing)
 shellsync uninstall      remove hooks
 shellsync edit           open the config in $VISUAL/$EDITOR (or run [edit] command), then rebuild
 shellsync check          validate the config and parse the generated code
-shellsync print zsh|bash|nu|pwsh   show the generated code
-shellsync hook zshenv|zshrc|bashrc|nu-env|nu-config|pwsh   print a hook block, for manual setup
+shellsync print zsh|bash|nu|pwsh|powershell   show the generated code
+shellsync hook zshenv|zshrc|bashrc|nu-env|nu-config|pwsh|powershell   print a hook block, for manual setup
 shellsync paths          show the files involved
 shellsync build          rebuild by hand (normally done automatically)
 ```
@@ -301,7 +336,8 @@ into the hooks, so later changes to those variables don't affect existing
 hooks. `--exe FILE` sets the binary the hooks run (default: the running one).
 
 **`check`** also hands the generated code to zsh (`zsh -n`), bash
-(`bash -n`), nushell (`nu-check`) and PowerShell (its parser) to parse, without running it, so a typo in an alias or init
+(`bash -n`), nushell (`nu-check`), PowerShell and, on Windows, Windows
+PowerShell (their parsers) to parse, without running it, so a typo in an alias or init
 block shows up before a shell trips over it. In nushell, a line that doesn't
 parse stops the whole config from loading, and some aliases that work in zsh
 don't parse there: nushell can't alias a pipeline (`ls -l | sort`). Errors
@@ -314,7 +350,7 @@ it fails. The code is parsed from a folder inside the cache directory, not
 from the temp directory, since it may contain values from your config.
 
 The code is parsed on its own, without the rest of your `.zshrc`, `.bashrc`,
-`config.nu` or PowerShell profile. A nushell variable defined in your `config.nu` isn't known
+`config.nu` or PowerShell profiles. A nushell variable defined in your `config.nu` isn't known
 there, so code that uses it doesn't parse; define it in `[nu] init` instead.
 
 ## Notes
@@ -336,14 +372,15 @@ there, so code that uses it doesn't parse; define it in `[nu] init` instead.
 
 ```sh
 cargo test     # unit tests, plus end-to-end tests that start real zsh / bash / nu / pwsh
-               # in a temporary HOME (skipped if a shell isn't installed)
+               # (and Windows PowerShell on Windows) in a temporary HOME
+               # (skipped if a shell isn't installed)
 SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 ```
 
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
 `cargo clippy` (also for the Windows target), then the tests on Linux (zsh,
 bash 5, and pinned nushell and PowerShell releases), on a Windows runner tagged
-`windows` (with Git Bash, MSYS2 and Cygwin), and on a
+`windows` (with Git Bash, MSYS2, Cygwin and Windows PowerShell), and on a
 macOS runner tagged `macos` (with the system's bash 3.2).
 
 To release a version:

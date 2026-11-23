@@ -24,16 +24,18 @@ Usage: shellsync <command> [options]
 Commands:
   install          Create the config if missing, build, and hook into
                    ~/.zshenv, ~/.zshrc, ~/.bashrc, nushell's env.nu /
-                   config.nu and PowerShell's profile.ps1
+                   config.nu and PowerShell's profile.ps1 (on Windows also
+                   Windows PowerShell's, if it exists)
   uninstall        Remove the hooks (config and cache are kept)
   edit             Open the config in $VISUAL / $EDITOR (or run the config's
                    [edit] command instead), then rebuild
   build            Regenerate the shell files (shells do this automatically)
   check            Validate the config, and parse the generated code with
                    each shell (where installed)
-  print <shell>    Print the generated code for zsh, bash, nu or pwsh
-  hook <file>      Print the hook for zshenv, zshrc, bashrc, nu-env, nu-config
-                   or pwsh
+  print <shell>    Print the generated code for zsh, bash, nu, pwsh or
+                   powershell (Windows PowerShell 5.1)
+  hook <file>      Print the hook for zshenv, zshrc, bashrc, nu-env, nu-config,
+                   pwsh or powershell
   paths            Show the files shellsync reads and writes
 
 Options:
@@ -159,9 +161,10 @@ fn run(args: Vec<String>) -> Result {
     let shell_arg = |pos: &[String]| -> Result<Shell> {
         let s = pos
             .get(1)
-            .ok_or("expected a shell: zsh, bash, nu or pwsh")?;
-        Shell::parse(s)
-            .ok_or_else(|| format!("unknown shell `{s}` (expected zsh, bash, nu or pwsh)"))
+            .ok_or("expected a shell: zsh, bash, nu, pwsh or powershell")?;
+        Shell::parse(s).ok_or_else(|| {
+            format!("unknown shell `{s}` (expected zsh, bash, nu, pwsh or powershell)")
+        })
     };
 
     match positional.first().map(String::as_str) {
@@ -191,7 +194,7 @@ fn run(args: Vec<String>) -> Result {
         Some("hook") => {
             let which = positional
                 .get(1)
-                .ok_or("expected zshenv, zshrc, bashrc, nu-env, nu-config or pwsh")?;
+                .ok_or("expected zshenv, zshrc, bashrc, nu-env, nu-config, pwsh or powershell")?;
             let kind = HookFile::parse(which).ok_or_else(|| format!("unknown hook `{which}`"))?;
             print!("{}", kind.block(&paths, &exe()?, &home()));
             Ok(())
@@ -326,8 +329,12 @@ fn build(paths: &Paths, if_stale: bool, nu_tools: Option<&[String]>) -> Result<b
             failed.trim_end()
         ));
     }
-    for (_, name, text) in files {
-        write_atomic(&paths.output(name), &text, stamp)?;
+    for (shell, name, text) in files {
+        write_atomic(
+            &paths.output(name),
+            &format!("{}{text}", shell.bom()),
+            stamp,
+        )?;
     }
     Ok(true)
 }
@@ -403,7 +410,7 @@ fn parse_all(
 /// Parses `code` with `shell` (at `exe`), from a file named `name` in `dir`.
 /// Returns the shell's error message if it doesn't parse.
 fn parse(shell: Shell, exe: &Path, dir: &Path, name: &str, code: &str) -> Result<Option<String>> {
-    write_atomic(&dir.join(name), code, None)?;
+    write_atomic(&dir.join(name), &format!("{}{code}", shell.bom()), None)?;
     let out = shell
         .syntax_check(exe, name)
         .current_dir(dir)

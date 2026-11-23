@@ -58,7 +58,7 @@ $__shellsync_command = {
 }
 ";
 
-const HELPERS_END: &str = "\
+pub(super) const HELPERS_END: &str = "\
 $ExecutionContext.SessionState.PSVariable.Remove('__shellsync_executable')
 $ExecutionContext.SessionState.PSVariable.Remove('__shellsync_command')
 ";
@@ -68,26 +68,9 @@ impl Dialect for Pwsh {
         format!("$env:{name} = {}\n", template_word(value))
     }
 
-    /// The first occurrence of a directory is kept, so prepended entries
-    /// move to the front. Paths are case-insensitive on Windows.
+    /// Paths are case-insensitive on Windows.
     fn path(prepend: &[&str], append: &[&str]) -> String {
-        let list = |l: &[&str]| {
-            let words: Vec<String> = l.iter().map(|p| template_word(p)).collect();
-            format!("@({})", words.join(", "))
-        };
-        let mut parts = Vec::new();
-        if !prepend.is_empty() {
-            parts.push(list(prepend));
-        }
-        parts.push("($env:PATH -split [IO.Path]::PathSeparator)".into());
-        if !append.is_empty() {
-            parts.push(list(append));
-        }
-        format!(
-            "$env:PATH = & {{ $path = @(); foreach ($dir in {}) {{ if ($dir -and $path -{}notcontains $dir) {{ $path += $dir }} }}; $path -join [IO.Path]::PathSeparator }}\n",
-            parts.join(" + "),
-            if cfg!(windows) { "i" } else { "c" }
-        )
+        path_line(prepend, append, cfg!(windows))
     }
 
     /// PowerShell aliases can't take arguments, so an alias becomes a function
@@ -141,6 +124,28 @@ impl Dialect for Pwsh {
     fn guard_helpers() -> (&'static str, &'static str) {
         (HELPERS, HELPERS_END)
     }
+}
+
+/// The PATH line, also for Windows PowerShell. The first occurrence of a
+/// directory is kept, so prepended entries move to the front.
+pub(super) fn path_line(prepend: &[&str], append: &[&str], case_insensitive: bool) -> String {
+    let list = |l: &[&str]| {
+        let words: Vec<String> = l.iter().map(|p| template_word(p)).collect();
+        format!("@({})", words.join(", "))
+    };
+    let mut parts = Vec::new();
+    if !prepend.is_empty() {
+        parts.push(list(prepend));
+    }
+    parts.push("($env:PATH -split [IO.Path]::PathSeparator)".into());
+    if !append.is_empty() {
+        parts.push(list(append));
+    }
+    format!(
+        "$env:PATH = & {{ $path = @(); foreach ($dir in {}) {{ if ($dir -and $path -{}notcontains $dir) {{ $path += $dir }} }}; $path -join [IO.Path]::PathSeparator }}\n",
+        parts.join(" + "),
+        if case_insensitive { "i" } else { "c" }
+    )
 }
 
 /// `'...'` with embedded single quotes doubled. PowerShell also takes the

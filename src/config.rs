@@ -12,11 +12,12 @@ use toml::{Table, Value as Toml};
 
 use crate::shell::Shell;
 
-/// What a per-shell key selects: one shell, or with `sh` every shell of the
-/// sh family.
+/// What a per-shell key selects: one shell, or a family of shells: with `sh`
+/// zsh and bash, with `ps` both PowerShells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Target {
     Sh,
+    Ps,
     Shell(Shell),
 }
 
@@ -24,12 +25,13 @@ impl Target {
     fn named(key: &str) -> Option<Target> {
         match key {
             "sh" => Some(Target::Sh),
+            "ps" => Some(Target::Ps),
             _ => Shell::named(key).map(Target::Shell),
         }
     }
 
     fn names() -> Vec<&'static str> {
-        let mut names = vec!["sh"];
+        let mut names = vec!["sh", "ps"];
         names.extend(Shell::ALL.map(Shell::name));
         names
     }
@@ -38,6 +40,7 @@ impl Target {
     pub fn name(self) -> &'static str {
         match self {
             Target::Sh => "sh",
+            Target::Ps => "ps",
             Target::Shell(s) => s.name(),
         }
     }
@@ -45,6 +48,7 @@ impl Target {
     pub fn covers(self, shell: Shell) -> bool {
         match self {
             Target::Sh => shell.is_sh(),
+            Target::Ps => shell.is_ps(),
             Target::Shell(s) => s == shell,
         }
     }
@@ -52,7 +56,7 @@ impl Target {
 
 /// A value that is either shared by all shells or given separately per shell.
 /// A per-shell value is skipped in the shells it doesn't cover; a shell's own
-/// key takes precedence over `sh`.
+/// key takes precedence over its family's (`sh`, `ps`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     All(String),
@@ -65,7 +69,12 @@ impl Value {
             Value::All(s) => Some(s),
             Value::PerShell(by_target) => by_target
                 .get(&Target::Shell(shell))
-                .or_else(|| by_target.get(&Target::Sh).filter(|_| shell.is_sh()))
+                .or_else(|| {
+                    [Target::Sh, Target::Ps]
+                        .into_iter()
+                        .filter(|family| family.covers(shell))
+                        .find_map(|family| by_target.get(&family))
+                })
                 .map(String::as_str),
         }
     }
@@ -79,7 +88,7 @@ pub struct Entries {
     pub path_prepend: Vec<Value>,
     pub path_append: Vec<Value>,
     pub aliases: Vec<(String, Value)>,
-    /// Raw code from the `init` of each `[sh]`/`[<shell>]` section, in file order.
+    /// Raw code from the `init` of each `[sh]`/`[ps]`/`[<shell>]` section, in file order.
     pub init_blocks: Vec<(Target, String)>,
 }
 
@@ -470,6 +479,31 @@ mod tests {
     }
 
     #[test]
+    fn ps_covers_both_powershells_and_yields_to_a_shell_key() {
+        let cfg = Config::parse(
+            r#"
+            [aliases]
+            a = { ps = "for ps", sh = "for sh" }
+            b = { ps = "for ps", powershell = "for 5.1" }
+            [ps]
+            init = "both"
+            [pwsh]
+            init = "7 only"
+            "#,
+        )
+        .unwrap();
+        let get = |i: usize, shell| cfg.entries.aliases[i].1.get(shell);
+        assert_eq!(get(0, Shell::Pwsh), Some("for ps"));
+        assert_eq!(get(0, Shell::Powershell), Some("for ps"));
+        assert_eq!(get(0, Shell::Bash), Some("for sh"));
+        assert_eq!(get(0, Shell::Nu), None);
+        assert_eq!(get(1, Shell::Pwsh), Some("for ps"));
+        assert_eq!(get(1, Shell::Powershell), Some("for 5.1"));
+        assert_eq!(cfg.entries.init(Shell::Pwsh), "both\n7 only");
+        assert_eq!(cfg.entries.init(Shell::Powershell), "both");
+    }
+
+    #[test]
     fn init_blocks_add_up_in_file_order() {
         let cfg = Config::parse(
             r#"
@@ -492,14 +526,14 @@ mod tests {
         assert!(e("[env]\n\"BAD-NAME\" = 'x'").starts_with("env.BAD-NAME"));
         assert_eq!(
             e("[env]\nX = { fish = 'x' }"),
-            "env.X.fish: unknown key (expected `sh`, `zsh`, `bash`, `nu` or `pwsh`)"
+            "env.X.fish: unknown key (expected `sh`, `ps`, `zsh`, `bash`, `nu`, `pwsh` or `powershell`)"
         );
         assert!(e("[aliases]\nx = { sh = ' ' }").contains("empty"));
         assert!(e("[path]\nprepend = [1]").starts_with("path.prepend[0]"));
         assert!(e("[aliases]\nx = ''").contains("empty"));
         assert_eq!(
             e("[bogus]"),
-            "unknown section `bogus` (expected env, path, aliases, tool, edit, sh, zsh, bash, nu or pwsh)"
+            "unknown section `bogus` (expected env, path, aliases, tool, edit, sh, ps, zsh, bash, nu, pwsh or powershell)"
         );
         assert_eq!(
             e("[edit]\neditor = 'x'"),
@@ -512,7 +546,7 @@ mod tests {
         assert!(e("[env\n").contains("line 1"));
         assert_eq!(
             e("[tool.eza]\nfoo = 1"),
-            "tool.eza.foo: unknown key (expected command, exists, env, path, aliases, sh, zsh, bash, nu or pwsh)"
+            "tool.eza.foo: unknown key (expected command, exists, env, path, aliases, sh, ps, zsh, bash, nu, pwsh or powershell)"
         );
         assert!(e("[tool.eza.env]\n\"BAD-NAME\" = 'x'").starts_with("tool.eza.env.BAD-NAME"));
         assert!(e("[tool.eza.aliases]\nx = { fish = 'x' }").starts_with("tool.eza.aliases.x.fish"));

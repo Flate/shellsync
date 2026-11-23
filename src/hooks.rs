@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::shell::{Shell, bash, nu, pwsh, zsh};
+use crate::shell::{Shell, bash, nu, powershell, pwsh, zsh};
 use crate::{Paths, Result};
 
 pub const BEGIN: &str = "# >>> shellsync >>>";
@@ -18,6 +18,7 @@ pub enum HookFile {
     NuEnv,
     NuConfig,
     PwshProfile,
+    PowershellProfile,
 }
 
 impl HookFile {
@@ -30,6 +31,7 @@ impl HookFile {
             "nu-env" => Some(HookFile::NuEnv),
             "nu-config" => Some(HookFile::NuConfig),
             "pwsh" => Some(HookFile::PwshProfile),
+            "powershell" => Some(HookFile::PowershellProfile),
             _ => None,
         }
     }
@@ -42,6 +44,7 @@ impl HookFile {
             HookFile::NuEnv => "nu env",
             HookFile::NuConfig => "nu config",
             HookFile::PwshProfile => "pwsh profile",
+            HookFile::PowershellProfile => "ps5 profile",
         }
     }
 
@@ -61,6 +64,7 @@ impl HookFile {
             HookFile::NuEnv => nu::env_hook(paths, exe, home),
             HookFile::NuConfig => nu::config_hook(paths, home),
             HookFile::PwshProfile => pwsh::profile_hook(paths, exe, home),
+            HookFile::PowershellProfile => powershell::profile_hook(paths, exe, home),
         };
         format!("{BEGIN}\n{body}{END}\n")
     }
@@ -68,7 +72,9 @@ impl HookFile {
 
 /// Where each hook goes on this machine, for the shells native to it. On
 /// Windows, `.bashrc` only if it exists: most Windows users have no bash,
-/// and Git Bash, MSYS2 and Cygwin each have their own.
+/// and Git Bash, MSYS2 and Cygwin each have their own. The same goes for
+/// Windows PowerShell's profile: every Windows has 5.1, but by default it
+/// runs no scripts, and would complain at every start about a new profile.
 pub fn files() -> Vec<(HookFile, PathBuf)> {
     let mut files = Vec::new();
     if Shell::Zsh.native() {
@@ -83,6 +89,12 @@ pub fn files() -> Vec<(HookFile, PathBuf)> {
     files.push((HookFile::NuEnv, nu_env));
     files.push((HookFile::NuConfig, nu_config));
     files.push((HookFile::PwshProfile, pwsh::profile_file()));
+    if Shell::Powershell.native() {
+        let profile = powershell::profile_file();
+        if profile.exists() {
+            files.push((HookFile::PowershellProfile, profile));
+        }
+    }
     files
 }
 
@@ -249,6 +261,20 @@ mod tests {
                  {END}\n"
             )
         );
+        assert_eq!(
+            HookFile::PowershellProfile.block(&paths, exe, home),
+            format!(
+                "{BEGIN}\n\
+                 & {{\n  \
+                 $exe = \"${{HOME}}/.cargo/bin/shellsync\"; $cfg = \"${{HOME}}/.config/shellsync/config.toml\"; $out = \"${{HOME}}/.cache/shellsync/init-ps5.ps1\"\n  \
+                 if ([IO.File]::Exists($exe) -and (-not [IO.File]::Exists($out) -or ([IO.File]::Exists($cfg) -and ([IO.File]::GetAttributes($cfg).HasFlag([IO.FileAttributes]::ReparsePoint) -or [IO.File]::GetLastWriteTimeUtc($cfg) -ne [IO.File]::GetLastWriteTimeUtc($out))))) {{\n    \
+                 & $exe build --if-stale --config $cfg --out-dir \"${{HOME}}/.cache/shellsync\"\n  \
+                 }}\n\
+                 }}\n\
+                 if ([IO.File]::Exists(\"${{HOME}}/.cache/shellsync/init-ps5.ps1\")) {{ . \"${{HOME}}/.cache/shellsync/init-ps5.ps1\" }}\n\
+                 {END}\n"
+            )
+        );
     }
 
     #[test]
@@ -272,6 +298,11 @@ mod tests {
         assert!(
             pwsh.contains("$exe = '/opt/homebrew/bin/shellsync';"),
             "{pwsh}"
+        );
+        let ps5 = HookFile::PowershellProfile.block(&paths, exe, home);
+        assert!(
+            ps5.contains("$exe = \"/opt/homebrew/bin/shellsync\";"),
+            "{ps5}"
         );
 
         // With HOME=/ every path is "under home"; keep them absolute.
