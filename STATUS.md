@@ -13,7 +13,7 @@
 
 ## In progress
 
-Windows PowerShell 5.1 support on branch `feat/windows-powershell` (not merged, not released): tests pass on macOS and on the Windows runner; CI not run yet.
+Windows PowerShell 5.1 support on branch `feat/windows-powershell`, in review as !2 (not merged, not released): tests pass on macOS and on the Windows runner, and the CI pipeline passes.
 
 Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup, `.zshenv`/`.zshrc` split and `--exe`, release builds, `check` and `build` parse with each shell, PowerShell 7, Windows, bash, bash on Windows).
 
