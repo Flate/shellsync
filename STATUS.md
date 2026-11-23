@@ -13,7 +13,7 @@
 
 ## In progress
 
-Windows PowerShell 5.1 support on branch `feat/windows-powershell`, in review as !2 (not merged, not released): tests pass on macOS and on the Windows runner, and the CI pipeline passes.
+Release 0.2.0 (Windows PowerShell 5.1 support, merged in !2): version and changelog set on branch `chore/release-0.2.0`; not tagged yet.
 
 Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissions, hook robustness, one module per shell with the `sh` key, `[tool.X]` conditions, nushell re-checks tools at startup, `.zshenv`/`.zshrc` split and `--exe`, release builds, `check` and `build` parse with each shell, PowerShell 7, Windows, bash, bash on Windows).
 
@@ -24,7 +24,7 @@ Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissio
 
 ## Next steps
 
-- Merge Windows PowerShell 5.1 support, release it as 0.2.0, and add a `shellsync hook powershell` partial to the dotfiles' `.chezmoitemplates/shellsync/`
+- Tag `v0.2.0` and check the release; then pin 0.2.0 in the dotfiles and add a `shellsync hook powershell` partial to their `.chezmoitemplates/shellsync/`
 
 ## Constraints
 

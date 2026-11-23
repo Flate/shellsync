@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
 ### Added
 
 - Windows PowerShell 5.1: `powershell` key in per-shell values, `[powershell] init` section, generated `init-ps5.ps1`, `shellsync print powershell` and `shellsync hook powershell`; on Windows, `install` hooks its profile if it exists
