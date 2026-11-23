@@ -54,3 +54,8 @@ init = '''
 # Raw PowerShell code, appended to the generated file.
 init = '''
 '''
+
+# If a dotfile manager writes this file from a template, have `shellsync edit`
+# run its edit command instead of opening this file, e.g.:
+# [edit]
+# command = "chezmoi edit --apply ~/.config/shellsync/config.toml"

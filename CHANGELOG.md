@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sh` key in per-shell values and `[sh] init` section for zsh and bash
 - `[tool.X]` tables for entries that apply only where a tool is installed (`command`) or a path exists (`exists`); checked at every shell start
 - zsh environment variables and PATH load from `.zshenv`, so scripts and other non-interactive zsh sessions get them too; aliases and init code load from `.zshrc`
+- `[edit] command` in the config: what `shellsync edit` runs instead of opening the config, e.g. a dotfile manager's edit command
 - `--exe` option for `install` and `hook`, to set the binary the hooks run, e.g. in dotfile templates
 - `check` parses the generated code with each shell and names the config key of each error; `build` does the same and keeps the last good build if a shell can't parse it
 - Generated files are readable only by the user (mode 0600)

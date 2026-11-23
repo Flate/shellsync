@@ -131,6 +131,9 @@ pub struct Config {
     /// Entries outside `[tool]` tables; they always apply.
     pub entries: Entries,
     pub tools: Vec<Tool>,
+    /// `[edit] command`: what `shellsync edit` runs instead of opening the
+    /// config in an editor, e.g. a dotfile manager's own edit command.
+    pub edit_command: Option<String>,
 }
 
 #[derive(Debug)]
@@ -159,8 +162,10 @@ impl Config {
                     let ctx = format!("tool.{name}");
                     cfg.tools.push(tool(name, as_table(t, &ctx)?, &ctx)?);
                 }
+            } else if key == "edit" {
+                cfg.edit_command = Some(edit_command(as_table(val, "edit")?)?);
             } else if !section(&mut cfg.entries, key, val, "")? {
-                let mut sections = vec!["env", "path", "aliases", "tool"];
+                let mut sections = vec!["env", "path", "aliases", "tool", "edit"];
                 sections.extend(Target::names());
                 return err(format!(
                     "unknown section `{key}` (expected {})",
@@ -170,6 +175,20 @@ impl Config {
         }
         Ok(cfg)
     }
+}
+
+/// The `command` of the `[edit]` table.
+fn edit_command(table: &Table) -> Result<String, Error> {
+    let mut command = None;
+    for (key, val) in table {
+        match (key.as_str(), val) {
+            ("command", Toml::String(s)) if !s.trim().is_empty() => command = Some(s.clone()),
+            ("command", Toml::String(_)) => return err("edit.command: empty string"),
+            ("command", _) => return err("edit.command: expected a string"),
+            _ => return err(format!("edit.{key}: unknown key (expected command)")),
+        }
+    }
+    command.ok_or_else(|| Error("edit: expected `command = \"...\"`".into()))
 }
 
 /// Parses one `[tool.X]` table. Without `command` or `exists`, the tool's
@@ -379,6 +398,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_the_edit_command() {
+        let cfg = Config::parse(
+            "[edit]\ncommand = 'chezmoi edit --apply ~/.config/shellsync/config.toml'",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.edit_command.as_deref(),
+            Some("chezmoi edit --apply ~/.config/shellsync/config.toml")
+        );
+        assert_eq!(Config::parse("").unwrap().edit_command, None);
+    }
+
+    #[test]
     fn parses_all_sections_in_order() {
         let cfg = Config::parse(
             r#"
@@ -467,8 +499,16 @@ mod tests {
         assert!(e("[aliases]\nx = ''").contains("empty"));
         assert_eq!(
             e("[bogus]"),
-            "unknown section `bogus` (expected env, path, aliases, tool, sh, zsh, bash, nu or pwsh)"
+            "unknown section `bogus` (expected env, path, aliases, tool, edit, sh, zsh, bash, nu or pwsh)"
         );
+        assert_eq!(
+            e("[edit]\neditor = 'x'"),
+            "edit.editor: unknown key (expected command)"
+        );
+        assert_eq!(e("[edit]\ncommand = 1"), "edit.command: expected a string");
+        assert_eq!(e("[edit]\ncommand = ' '"), "edit.command: empty string");
+        assert!(e("[edit]").starts_with("edit: expected `command"));
+        assert!(e("edit = 'x'").starts_with("edit: expected a table"));
         assert!(e("[env\n").contains("line 1"));
         assert_eq!(
             e("[tool.eza]\nfoo = 1"),

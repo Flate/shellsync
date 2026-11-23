@@ -26,7 +26,8 @@ Commands:
                    ~/.zshenv, ~/.zshrc, ~/.bashrc, nushell's env.nu /
                    config.nu and PowerShell's profile.ps1
   uninstall        Remove the hooks (config and cache are kept)
-  edit             Open the config in $VISUAL / $EDITOR, then rebuild
+  edit             Open the config in $VISUAL / $EDITOR (or run the config's
+                   [edit] command instead), then rebuild
   build            Regenerate the shell files (shells do this automatically)
   check            Validate the config, and parse the generated code with
                    each shell (where installed)
@@ -525,17 +526,33 @@ impl Drop for TempDir {
     }
 }
 
+/// Opens the config in the user's editor, or runs the config's `[edit]
+/// command` instead (for a config that a dotfile manager writes from a
+/// template, its own edit command), then rebuilds. A config with errors is
+/// opened in the editor, so that it can be fixed.
 fn edit(paths: &Paths) -> Result {
     ensure_config(paths)?;
-    let editor = ["VISUAL", "EDITOR"]
-        .iter()
-        .find_map(|v| env::var(v).ok().filter(|s| !s.trim().is_empty()))
-        .unwrap_or_else(|| if cfg!(windows) { "notepad" } else { "vi" }.into());
-    let status = editor_command(&editor, &paths.config)
-        .status()
-        .map_err(|e| format!("running {editor}: {e}"))?;
+    let command = match load(&paths.config) {
+        Ok(cfg) => cfg.edit_command,
+        Err(e) => {
+            eprintln!("shellsync: {e}\nshellsync: opening the file in your editor");
+            None
+        }
+    };
+    let (what, mut cmd) = match command {
+        Some(command) => (command.clone(), shell_command(&command)),
+        None => {
+            let editor = ["VISUAL", "EDITOR"]
+                .iter()
+                .find_map(|v| env::var(v).ok().filter(|s| !s.trim().is_empty()))
+                .unwrap_or_else(|| if cfg!(windows) { "notepad" } else { "vi" }.into());
+            let cmd = editor_command(&editor, &paths.config);
+            (editor, cmd)
+        }
+    };
+    let status = cmd.status().map_err(|e| format!("running {what}: {e}"))?;
     if !status.success() {
-        return Err(format!("{editor} exited with {status}"));
+        return Err(format!("{what} exited with {status}"));
     }
     build(paths, false, None)?;
     let zsh_hint = if cfg!(windows) {
@@ -556,6 +573,23 @@ fn editor_command(editor: &str, file: &Path) -> Command {
         .arg(format!("{editor} \"$1\""))
         .arg("sh")
         .arg(file);
+    c
+}
+
+/// Runs `command` through the system shell.
+#[cfg(unix)]
+fn shell_command(command: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(command);
+    c
+}
+
+/// `cmd /S /C "<command>"`, passed raw; see `editor_command`.
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = Command::new("cmd");
+    c.args(["/S", "/C"]).raw_arg(format!("\"{command}\""));
     c
 }
 

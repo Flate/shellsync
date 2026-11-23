@@ -63,7 +63,14 @@ place, which the tool would overwrite or report as changed. Instead, put the
 blocks into your templates. `shellsync hook zshenv` (and `zshrc`, `bashrc`,
 `nu-env`, `nu-config`, `pwsh`) prints each one; `--exe` sets where the binary is, for example
 `shellsync hook zshenv --exe ~/.local/bin/shellsync`, so the blocks don't
-depend on where shellsync ran when you printed them.
+depend on where shellsync ran when you printed them. If the tool also writes
+the config from a template, edits to `config.toml` itself are overwritten on
+its next run. Have `shellsync edit` run the tool's own edit command instead:
+
+```toml
+[edit]
+command = "chezmoi edit --apply ~/.config/shellsync/config.toml"
+```
 
 ## How it stays fast and invisible
 
@@ -181,6 +188,7 @@ config in your user profile. Some things to know:
 | `[pwsh]`    | `init = '''...'''`: raw PowerShell code added at the end of the generated file.                                 |
 | `[sh]`      | `init = '''...'''`: raw code for zsh and bash, combined with `[zsh]` and `[bash] init` in file order.            |
 | `[tool.X]`  | Any of the above that apply only where a tool is installed; see [Conditional entries](#conditional-entries).    |
+| `[edit]`    | `command = "..."`: what `shellsync edit` runs instead of opening the config, through `sh -c` (Windows: `cmd /C`). |
 
 **Values in `[env]` and `[path]`** can use:
 
@@ -278,7 +286,7 @@ shell gets them.
 ```
 shellsync install        set up hooks (creates the config if missing)
 shellsync uninstall      remove hooks
-shellsync edit           open the config in $VISUAL/$EDITOR, then rebuild
+shellsync edit           open the config in $VISUAL/$EDITOR (or run [edit] command), then rebuild
 shellsync check          validate the config and parse the generated code
 shellsync print zsh|bash|nu|pwsh   show the generated code
 shellsync hook zshenv|zshrc|bashrc|nu-env|nu-config|pwsh   print a hook block, for manual setup

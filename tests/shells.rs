@@ -984,6 +984,51 @@ fn build_does_not_use_the_temp_dir() {
     assert!(left.is_empty(), "left behind: {left:?}");
 }
 
+/// `edit` opens the config in $VISUAL, or runs `[edit] command` instead, such
+/// as `chezmoi edit --apply` for a config that a dotfile manager writes from
+/// a template; either way it rebuilds afterwards. A config with errors is
+/// opened in the editor, so that it can be fixed.
+#[test]
+fn edit_runs_the_editor_or_the_configured_command() {
+    let sb = Sandbox::new();
+    let (copy, fails) = if cfg!(windows) {
+        ("copy /Y", "exit /b 1")
+    } else {
+        ("cp", "false")
+    };
+    let edit = |visual: &str| {
+        let mut c = sb.cmd(BIN);
+        c.env("VISUAL", visual).env_remove("EDITOR").arg("edit");
+        run(c)
+    };
+    let built = || fs::read_to_string(sb.out_dir().join("init.ps1")).unwrap();
+    let by_editor = sb.dir.join("by-editor.toml");
+    fs::write(&by_editor, "[env]\nEDITED = 'by editor'\n").unwrap();
+    let editor = format!("{copy} \"{}\"", by_editor.display());
+
+    sb.edit_config("[env]\nEDITED = 'before'\n");
+    edit(&editor);
+    assert!(built().contains("by editor"), "{}", built());
+
+    // Here the command stands for `chezmoi edit --apply`: it writes the config.
+    let by_command = sb.dir.join("by-command.toml");
+    fs::write(&by_command, "[env]\nEDITED = 'by command'\n").unwrap();
+    let command = format!(
+        "{copy} \"{}\" \"{}\"",
+        by_command.display(),
+        sb.config().display()
+    );
+    sb.edit_config(&format!(
+        "[env]\nEDITED = 'before'\n[edit]\ncommand = '{command}'\n"
+    ));
+    edit(fails);
+    assert!(built().contains("by command"), "{}", built());
+
+    sb.edit_config(&format!("[env\n[edit]\ncommand = '{command}'\n"));
+    edit(&editor);
+    assert!(built().contains("by editor"), "{}", built());
+}
+
 /// Synced dotfiles can carry the hooks to a machine where the binary is
 /// missing or has moved. Shells must still start, without error output.
 #[test]
