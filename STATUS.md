@@ -6,8 +6,8 @@
 - Windows: nushell, PowerShell and bash in Git Bash, MSYS2 and Cygwin (no zsh)
 - Tests pass on macOS (zsh 5.9, bash 3.2, nu 0.117.0, pwsh 7.7.0) and in the Linux CI image (zsh 5.9, bash 5.2, nu 0.117.0, pwsh 7.6.10)
 - Tests pass on the Windows runner (pwsh 7.6.10, nu 0.117.0, Git Bash 5.3, MSYS2 bash 5.3, Cygwin bash 5.2; run over SSH as `gitlab-ci`)
-- GitLab CI pipeline passes on GitLab (Linux and the `macos` runner); `test:windows` and `build:windows` not yet run there
-- Release pipeline (`v*` tags) and `ci/release.sh`: builds verified locally (Linux musl in the CI image, macOS arm64 on this Mac, Windows MSVC with static CRT on the Windows runner); publishing tested against a mock API only, not yet on GitLab; the dry run on `main` passes up to the missing changelog section
+- GitLab CI pipeline passes on GitLab, including `test:windows` and the release jobs
+- Released 0.1.0 (`v0.1.0`): binaries and `SHA256SUMS` in the package registry, which anyone can download from
 - Shells start normally when the binary or the generated files are missing
 
 ## In progress
@@ -20,8 +20,7 @@ Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissio
 
 ## Next steps
 
-1. Release 0.1.0: the release commit is ready (package registry is public). Push, check the dry run on `main`, tag `v0.1.0`; then the checksums from `SHA256SUMS` into the dotfiles' `.chezmoidata/shellsync.toml`
-2. Dotfiles (`flate/dotfiles-new`, branch `feature/shellsync`, ready, not pushed): shared config, hooks for all four shells, binary via chezmoi external; merge after the release
+1. Dotfiles (`flate/dotfiles-new`, branch `feature/shellsync`): shared config, hooks for all four shells, binary via chezmoi external, pinned to 0.1.0; merge once its pipeline passes. `truenas_admin` needs the binary in `/mnt/Private/bin/.local/bin` by hand
 
 ## Constraints
 
