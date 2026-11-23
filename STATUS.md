@@ -20,7 +20,8 @@ Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissio
 
 ## Next steps
 
-1. Dotfiles: shellsync config template and hook blocks (via `hook --exe`) in the chezmoi repo
+1. Release 0.1.0. The dotfiles need it downloadable without login: package registry set to "Everyone" (Settings > General > Visibility), then the checksums from `SHA256SUMS` into the dotfiles' `.chezmoidata/shellsync.toml`
+2. Dotfiles (`flate/dotfiles-new`, branch `feature/shellsync`, ready, not pushed): shared config, hooks for all four shells, binary via chezmoi external; merge after the release
 
 ## Constraints
 
