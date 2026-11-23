@@ -3,6 +3,7 @@
 
 pub mod bash;
 pub mod nu;
+pub mod powershell;
 pub mod pwsh;
 pub mod zsh;
 
@@ -18,10 +19,18 @@ pub enum Shell {
     Bash,
     Nu,
     Pwsh,
+    /// Windows PowerShell 5.1.
+    Powershell,
 }
 
 impl Shell {
-    pub const ALL: [Shell; 4] = [Shell::Zsh, Shell::Bash, Shell::Nu, Shell::Pwsh];
+    pub const ALL: [Shell; 5] = [
+        Shell::Zsh,
+        Shell::Bash,
+        Shell::Nu,
+        Shell::Pwsh,
+        Shell::Powershell,
+    ];
 
     /// The name used in the config file and in generated file names.
     pub fn name(self) -> &'static str {
@@ -30,6 +39,7 @@ impl Shell {
             Shell::Bash => "bash",
             Shell::Nu => "nu",
             Shell::Pwsh => "pwsh",
+            Shell::Powershell => "powershell",
         }
     }
 
@@ -39,10 +49,20 @@ impl Shell {
         matches!(self, Shell::Zsh | Shell::Bash)
     }
 
+    /// Whether the shell is a PowerShell, so the `ps` config key applies to it.
+    pub fn is_ps(self) -> bool {
+        matches!(self, Shell::Pwsh | Shell::Powershell)
+    }
+
     /// Whether shellsync hooks the shell into this platform: zsh isn't a
-    /// Windows shell. (bash is, in Git Bash, MSYS2 and Cygwin.)
+    /// Windows shell (bash is, in Git Bash, MSYS2 and Cygwin), and Windows
+    /// PowerShell is one only.
     pub fn native(self) -> bool {
-        !(cfg!(windows) && self == Shell::Zsh)
+        match self {
+            Shell::Zsh => !cfg!(windows),
+            Shell::Powershell => cfg!(windows),
+            _ => true,
+        }
     }
 
     /// The shell with this config name.
@@ -54,7 +74,6 @@ impl Shell {
     pub fn parse(s: &str) -> Option<Shell> {
         match s {
             "nushell" => Some(Shell::Nu),
-            "powershell" => Some(Shell::Pwsh),
             _ => Shell::named(s),
         }
     }
@@ -68,6 +87,7 @@ impl Shell {
             Shell::Bash => bash::syntax_check(exe, file),
             Shell::Nu => nu::syntax_check(exe, file),
             Shell::Pwsh => pwsh::syntax_check(exe, file),
+            Shell::Powershell => powershell::syntax_check(exe, file),
         }
     }
 
@@ -81,6 +101,16 @@ impl Shell {
             Shell::Bash => &[("init.bash", Parts::ALL)],
             Shell::Nu => &[("init.nu", Parts::ALL)],
             Shell::Pwsh => &[("init.ps1", Parts::ALL)],
+            Shell::Powershell => &[("init-ps5.ps1", Parts::ALL)],
+        }
+    }
+
+    /// What the shell's files start with on disk: Windows PowerShell reads
+    /// a file without a byte order mark in the ANSI code page, not as UTF-8.
+    pub fn bom(self) -> &'static str {
+        match self {
+            Shell::Powershell => "\u{feff}",
+            _ => "",
         }
     }
 }
@@ -155,6 +185,7 @@ pub fn render(cfg: &Config, shell: Shell, source: &str, checks: &Checks) -> Rend
         Shell::Bash => render_with::<bash::Bash>(cfg, shell, source, checks),
         Shell::Nu => render_with::<nu::Nu>(cfg, shell, source, checks),
         Shell::Pwsh => render_with::<pwsh::Pwsh>(cfg, shell, source, checks),
+        Shell::Powershell => render_with::<powershell::Powershell>(cfg, shell, source, checks),
     }
 }
 
@@ -175,6 +206,7 @@ pub fn snippets(cfg: &Config, shell: Shell) -> Vec<Snippet> {
         Shell::Bash => snippets_with::<bash::Bash>(cfg, shell),
         Shell::Nu => snippets_with::<nu::Nu>(cfg, shell),
         Shell::Pwsh => snippets_with::<pwsh::Pwsh>(cfg, shell),
+        Shell::Powershell => snippets_with::<powershell::Powershell>(cfg, shell),
     }
 }
 
@@ -470,6 +502,8 @@ mod tests {
         assert_eq!(Shell::named("nu"), Some(Shell::Nu));
         assert_eq!(Shell::named("nushell"), None);
         assert_eq!(Shell::parse("nushell"), Some(Shell::Nu));
+        assert_eq!(Shell::parse("pwsh"), Some(Shell::Pwsh));
+        assert_eq!(Shell::parse("powershell"), Some(Shell::Powershell));
         assert_eq!(Shell::parse("fish"), None);
     }
 }

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Windows PowerShell 5.1: `powershell` key in per-shell values, `[powershell] init` section, generated `init-ps5.ps1`, `shellsync print powershell` and `shellsync hook powershell`; on Windows, `install` hooks its profile if it exists
+- `ps` key in per-shell values and `[ps] init` section for PowerShell 7 and Windows PowerShell 5.1
+
+### Changed
+
+- On Windows, `build` and `check` also parse the generated code with Windows PowerShell 5.1, so plain-string aliases must parse there too (an alias that uses PowerShell 7 syntax such as `&&` now needs a per-shell value)
+- `shellsync print powershell` prints Windows PowerShell 5.1's code instead of PowerShell 7's; use `pwsh` for PowerShell 7
+
 ## [0.1.0] - 2026-11-23
 
 ### Added
