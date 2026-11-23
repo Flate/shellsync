@@ -8,7 +8,7 @@
 - Tests pass on the Windows runner (pwsh 7.6.10, Windows PowerShell 5.1.26100, nu 0.117.0, Git Bash 5.3, MSYS2 bash 5.3, Cygwin bash 5.2; run over SSH as `gitlab-ci`)
 - GitLab CI pipeline passes on GitLab, including `test:windows` and the release jobs
 - Released 0.2.0 (`v0.2.0`, Windows PowerShell 5.1 support): binaries and `SHA256SUMS` in the package registry, which anyone can download from through the API URLs (the release page's `/downloads/` links ask for a login)
-- Installed through the dotfiles (`flate/dotfiles-new`, merged in !16) on the Mac, the Linux users and TrueNAS' `truenas_admin` (binary placed by hand there)
+- Installed through the dotfiles (`flate/dotfiles-new`, merged in !16, 0.2.0 with the Windows PowerShell 5.1 hook in !21) on the Mac, the Linux users, Windows and TrueNAS' `truenas_admin` (binary placed by hand there)
 - Shells start normally when the binary or the generated files are missing
 
 ## In progress
@@ -22,7 +22,7 @@ Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissio
 
 ## Next steps
 
-- Pin 0.2.0 in the dotfiles and add a `shellsync hook powershell` partial to their `.chezmoitemplates/shellsync/`
+- Idea: cmd with clink. A generated Lua file sets env and PATH, aliases become `doskey` macros (`$*` for the arguments), a Lua hook in clink's scripts folder rebuilds when stale, `[tool]` checks via PATH/PATHEXT in Lua. To find out: whether clink's Lua API can read a file's mtime without a process, how `build` can parse-check the Lua and macros, config key `cmd` or `clink`
 
 ## Constraints
 
