@@ -102,9 +102,10 @@ test:macos:
     - cargo test --locked
 
 # Runs on a Windows machine (shell executor, PowerShell) with Rust, nushell,
-# PowerShell, Git for Windows, MSYS2 and Cygwin installed machine-wide (not
-# pinned). The tests use the three bash at their default locations. The cache key
-# uses the slug, since the local cache is a path and `:` isn't allowed in it.
+# PowerShell, Git for Windows, MSYS2, Cygwin and clink installed machine-wide
+# (not pinned). The tests use the three bash and clink at their default
+# locations. The cache key uses the slug, since the local cache is a path and
+# `:` isn't allowed in it.
 test:windows:
   stage: test
   tags:
@@ -126,6 +127,7 @@ test:windows:
     - '& "C:\Program Files\Git\bin\bash.exe" --version'
     - '& C:\msys64\usr\bin\bash.exe --version'
     - '& C:\cygwin64\bin\bash.exe --version'
+    - '& "C:\Program Files (x86)\clink\clink_x64.exe" --version'
   script:
     - cargo test --locked
 
