@@ -7,6 +7,7 @@
 - Tests pass on macOS (zsh 5.9, bash 3.2, nu 0.117.0, pwsh 7.7.0) and in the Linux CI image (zsh 5.9, bash 5.2, nu 0.117.0, pwsh 7.6.10)
 - Tests pass on the Windows runner (pwsh 7.6.10, Windows PowerShell 5.1.26100, nu 0.117.0, Git Bash 5.3, MSYS2 bash 5.3, Cygwin bash 5.2)
 - GitLab CI pipeline passes on GitLab, including `test:windows` and the release jobs
+- Tests also pass on the Windows runner built with the GNU toolchain (`test:windows-gnu`, Rust 1.100.0, no Visual Studio Build Tools)
 - Released 0.2.0 (`v0.2.0`, Windows PowerShell 5.1 support): binaries and `SHA256SUMS` in the package registry, which anyone can download from through the API URLs (the release page's `/downloads/` links ask for a login)
 - 0.1.0 and 0.2.0 also on GitHub releases (`Flate/shellsync`), added by hand with `gh` from the GitLab package files (checksums verified); later releases come from `release:github`
 - In daily use through the developer's dotfiles (version pinned there) on macOS, Linux and Windows
@@ -23,7 +24,6 @@ Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissio
 
 ## Next steps
 
-- `test:windows-gnu` (tests built with the GNU toolchain on the Windows runner): not run yet; the first run downloads the toolchain into the job's cache
 
 - GitHub releases (`release:github`): untested until the next tag; needs the `GITHUB_TOKEN` CI/CD variable set first (see README, Development). A dry run on the default branch only prints what it would do
 - Idea: cmd with clink. A generated Lua file sets env and PATH, aliases become `doskey` macros (`$*` for the arguments), a Lua hook in clink's scripts folder rebuilds when stale, `[tool]` checks via PATH/PATHEXT in Lua. To find out: whether clink's Lua API can read a file's mtime without a process, how `build` can parse-check the Lua and macros, config key `cmd` or `clink`
