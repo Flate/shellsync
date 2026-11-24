@@ -23,6 +23,8 @@ Improvement plan, steps 1–13b done (housekeeping, test fix, CI, file permissio
 
 ## Next steps
 
+- `test:windows-gnu` (tests built with the GNU toolchain on the Windows runner): not run yet; the first run downloads the toolchain into the job's cache
+
 - GitHub releases (`release:github`): untested until the next tag; needs the `GITHUB_TOKEN` CI/CD variable set first (see README, Development). A dry run on the default branch only prints what it would do
 - Idea: cmd with clink. A generated Lua file sets env and PATH, aliases become `doskey` macros (`$*` for the arguments), a Lua hook in clink's scripts folder rebuilds when stale, `[tool]` checks via PATH/PATHEXT in Lua. To find out: whether clink's Lua API can read a file's mtime without a process, how `build` can parse-check the Lua and macros, config key `cmd` or `clink`
 

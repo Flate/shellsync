@@ -378,10 +378,19 @@ cargo test     # unit tests, plus end-to-end tests that start real zsh / bash / 
 SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 ```
 
+On Windows, the GNU toolchain builds shellsync without the Visual Studio Build
+Tools, since it brings its own linker:
+
+```powershell
+rustup toolchain install stable-x86_64-pc-windows-gnu
+cargo +stable-x86_64-pc-windows-gnu test
+```
+
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
 `cargo clippy` (also for the Windows target), then the tests on Linux (zsh,
 bash 5, and pinned nushell and PowerShell releases), on a Windows runner tagged
-`windows` (with Git Bash, MSYS2, Cygwin and Windows PowerShell), and on a
+`windows` (with Git Bash, MSYS2, Cygwin and Windows PowerShell; once built with
+the MSVC toolchain and once with the GNU one), and on a
 macOS runner tagged `macos` (with the system's bash 3.2).
 
 To release a version:

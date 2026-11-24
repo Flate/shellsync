@@ -128,6 +128,34 @@ test:windows:
   script:
     - cargo test --locked
 
+# The same tests built with the GNU toolchain, which brings its own MinGW
+# linker, so shellsync builds on Windows without the Visual Studio Build Tools.
+# The toolchain goes into a rustup home in the project dir (the machine-wide
+# one isn't writable by the runner's user) and is cached with it. Pinned to the
+# Linux image's version.
+test:windows-gnu:
+  stage: test
+  tags:
+    - windows
+  variables:
+    SHELLSYNC_REQUIRE_SHELLS: "1"
+    RUSTUP_HOME: $CI_PROJECT_DIR/.rustup-home
+    TOOLCHAIN: 1.100.0-x86_64-pc-windows-gnu
+  cache:
+    key:
+      prefix: $CI_JOB_NAME
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo-home/registry/
+      - .rustup-home/
+      - target/
+  before_script:
+    - rustup toolchain install $env:TOOLCHAIN --profile minimal --no-self-update
+    - cargo +$env:TOOLCHAIN --version
+  script:
+    - cargo +$env:TOOLCHAIN test --locked
+
 # Release builds run on v* tags. On the default branch they can be started by
 # hand to try a release before tagging: `release` then only prints what it
 # would publish.
