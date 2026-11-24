@@ -4,11 +4,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::shell::{Shell, bash, nu, powershell, pwsh, zsh};
+use crate::shell::{Shell, bash, cmd, nu, powershell, pwsh, zsh};
 use crate::{Paths, Result};
 
 pub const BEGIN: &str = "# >>> shellsync >>>";
 pub const END: &str = "# <<< shellsync <<<";
+/// The markers in Lua, whose comments start with `--`.
+pub const LUA_BEGIN: &str = "-- >>> shellsync >>>";
+pub const LUA_END: &str = "-- <<< shellsync <<<";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookFile {
@@ -19,6 +22,7 @@ pub enum HookFile {
     NuConfig,
     PwshProfile,
     PowershellProfile,
+    ClinkScript,
 }
 
 impl HookFile {
@@ -32,6 +36,7 @@ impl HookFile {
             "nu-config" => Some(HookFile::NuConfig),
             "pwsh" => Some(HookFile::PwshProfile),
             "powershell" => Some(HookFile::PowershellProfile),
+            "clink" => Some(HookFile::ClinkScript),
             _ => None,
         }
     }
@@ -45,6 +50,16 @@ impl HookFile {
             HookFile::NuConfig => "nu config",
             HookFile::PwshProfile => "pwsh profile",
             HookFile::PowershellProfile => "ps5 profile",
+            HookFile::ClinkScript => "clink script",
+        }
+    }
+
+    /// The lines that start and end the block, as comments of the file's
+    /// language.
+    pub fn markers(self) -> (&'static str, &'static str) {
+        match self {
+            HookFile::ClinkScript => (LUA_BEGIN, LUA_END),
+            _ => (BEGIN, END),
         }
     }
 
@@ -65,8 +80,10 @@ impl HookFile {
             HookFile::NuConfig => nu::config_hook(paths, home),
             HookFile::PwshProfile => pwsh::profile_hook(paths, exe, home),
             HookFile::PowershellProfile => powershell::profile_hook(paths, exe, home),
+            HookFile::ClinkScript => cmd::script_hook(paths, exe, home),
         };
-        format!("{BEGIN}\n{body}{END}\n")
+        let (begin, end) = self.markers();
+        format!("{begin}\n{body}{end}\n")
     }
 }
 
@@ -75,6 +92,7 @@ impl HookFile {
 /// and Git Bash, MSYS2 and Cygwin each have their own. The same goes for
 /// Windows PowerShell's profile: every Windows has 5.1, but by default it
 /// runs no scripts, and would complain at every start about a new profile.
+/// cmd's hook goes into clink's profile folder, only if clink made it.
 pub fn files() -> Vec<(HookFile, PathBuf)> {
     let mut files = Vec::new();
     if Shell::Zsh.native() {
@@ -95,15 +113,21 @@ pub fn files() -> Vec<(HookFile, PathBuf)> {
             files.push((HookFile::PowershellProfile, profile));
         }
     }
+    if Shell::Cmd.native() {
+        let script = cmd::script_file();
+        if script.parent().is_some_and(Path::is_dir) {
+            files.push((HookFile::ClinkScript, script));
+        }
+    }
     files
 }
 
-/// Returns `text` with the shellsync block replaced by `block` (or removed
-/// when `block` is empty). A missing block is appended. A start marker
-/// without an end marker is an error: where the block ends is a guess, and a
-/// wrong guess would delete the user's own lines.
-fn splice(text: &str, block: &str) -> Result<String> {
-    let Some(start) = text.find(BEGIN) else {
+/// Returns `text` with the shellsync block, delimited by `markers`, replaced
+/// by `block` (or removed when `block` is empty). A missing block is
+/// appended. A start marker without an end marker is an error: where the
+/// block ends is a guess, and a wrong guess would delete the user's own lines.
+fn splice(text: &str, block: &str, (begin, end): (&str, &str)) -> Result<String> {
+    let Some(start) = text.find(begin) else {
         if block.is_empty() {
             return Ok(text.to_string());
         }
@@ -116,10 +140,10 @@ fn splice(text: &str, block: &str) -> Result<String> {
         return Ok(format!("{text}{sep}{block}"));
     };
     let end = text[start..]
-        .find(END)
-        .map(|i| start + i + END.len())
+        .find(end)
+        .map(|i| start + i + end.len())
         .ok_or_else(|| {
-            format!("found `{BEGIN}` without `{END}`; fix or remove the block by hand")
+            format!("found `{begin}` without `{end}`; fix or remove the block by hand")
         })?;
     let end = if text[end..].starts_with('\n') {
         end + 1
@@ -133,16 +157,17 @@ fn splice(text: &str, block: &str) -> Result<String> {
     Ok(format!("{before}{block}{}", &text[end..]))
 }
 
-/// Puts `block` into the file at `path` (or removes the block when `block`
-/// is empty). Returns whether the file changed.
-pub fn update_file(path: &Path, block: &str) -> Result<bool> {
+/// Puts `block` into the file at `path`, a `kind` file (or removes the block
+/// when `block` is empty). Returns whether the file changed.
+pub fn update_file(path: &Path, kind: HookFile, block: &str) -> Result<bool> {
     let old = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == io::ErrorKind::NotFound && block.is_empty() => return Ok(false),
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(format!("reading {}: {e}", path.display())),
     };
-    let new = splice(&old, block).map_err(|e| format!("{}: {e}", path.display()))?;
+    let new =
+        splice(&old, block, kind.markers()).map_err(|e| format!("{}: {e}", path.display()))?;
     if new == old {
         return Ok(false);
     }
@@ -160,7 +185,7 @@ mod tests {
 
     #[test]
     fn splice_appends_replaces_and_removes() {
-        let splice = |text: &str, block: &str| super::splice(text, block).unwrap();
+        let splice = |text: &str, block: &str| super::splice(text, block, (BEGIN, END)).unwrap();
         let block = format!("{BEGIN}\nnew\n{END}\n");
         assert_eq!(splice("", &block), block);
         assert_eq!(splice("a", &block), format!("a\n\n{block}"));
@@ -177,8 +202,24 @@ mod tests {
     fn splice_refuses_a_block_without_end_marker() {
         let broken = format!("top\n{BEGIN}\nold\nuser content\n");
         let block = format!("{BEGIN}\nnew\n{END}\n");
-        assert!(splice(&broken, &block).is_err());
-        assert!(splice(&broken, "").is_err());
+        assert!(splice(&broken, &block, (BEGIN, END)).is_err());
+        assert!(splice(&broken, "", (BEGIN, END)).is_err());
+    }
+
+    #[test]
+    fn splice_uses_the_markers_of_the_language() {
+        let lua = (LUA_BEGIN, LUA_END);
+        let block = format!("{LUA_BEGIN}\nnew\n{LUA_END}\n");
+        let installed = splice("-- mine\n", &block, lua).unwrap();
+        assert_eq!(installed, format!("-- mine\n\n{block}"));
+        let again = format!("{LUA_BEGIN}\nnewer\n{LUA_END}\n");
+        assert_eq!(
+            splice(&installed, &again, lua).unwrap(),
+            format!("-- mine\n\n{again}")
+        );
+        assert_eq!(splice(&installed, "", lua).unwrap(), "-- mine\n");
+        // A `#` block is someone else's text here, and the other way round.
+        assert_eq!(splice(&installed, "", (BEGIN, END)).unwrap(), installed);
     }
 
     fn paths_under(home: &str) -> Paths {
@@ -278,6 +319,40 @@ mod tests {
     }
 
     #[test]
+    fn clink_hook_is_lua() {
+        let paths = paths_under("/home/me");
+        let exe = Path::new("/home/me/.cargo/bin/shellsync");
+        let home = r#"(os.getenv("USERPROFILE") or "")"#;
+        assert_eq!(
+            HookFile::ClinkScript.block(&paths, exe, Path::new("/home/me")),
+            format!(
+                "{LUA_BEGIN}\n\
+                 if os.setalias then\n  \
+                 local exe, cfg, dir, out = {home} .. \"\\\\.cargo\\\\bin\\\\shellsync\", {home} .. \"\\\\.config\\\\shellsync\\\\config.toml\", {home} .. \"\\\\.cache\\\\shellsync\", {home} .. \"\\\\.cache\\\\shellsync\\\\init.lua\"\n  \
+                 local function info(file) return os.globfiles(file, 2, {{ system = true }})[1] end\n  \
+                 local built = info(out)\n  \
+                 if built then\n    \
+                 local ok, err = pcall(dofile, out)\n    \
+                 if not ok then print(\"shellsync: \" .. tostring(err)) end\n  \
+                 end\n  \
+                 local checked = false\n  \
+                 clink.onbeginedit(function()\n    \
+                 if checked then return end\n    \
+                 checked = true\n    \
+                 if not os.isfile(exe) then return end\n    \
+                 local source = info(cfg)\n    \
+                 if built and not (source and (source.type:find(\"link\") or source.mtime ~= built.mtime)) then return end\n    \
+                 os.execute('\"\"' .. exe .. '\" build --if-stale --config \"' .. cfg .. '\" --out-dir \"' .. dir .. '\"\"')\n    \
+                 local now = info(out)\n    \
+                 if now and not (built and now.mtime == built.mtime) then clink.reload() end\n  \
+                 end)\n\
+                 end\n\
+                 {LUA_END}\n"
+            )
+        );
+    }
+
+    #[test]
     fn hooks_keep_paths_outside_home_absolute() {
         let paths = paths_under("/home/me");
         let exe = Path::new("/opt/homebrew/bin/shellsync");
@@ -303,6 +378,11 @@ mod tests {
         assert!(
             ps5.contains("$exe = \"/opt/homebrew/bin/shellsync\";"),
             "{ps5}"
+        );
+        let clink = HookFile::ClinkScript.block(&paths, exe, home);
+        assert!(
+            clink.contains("local exe, cfg, dir, out = \"/opt/homebrew/bin/shellsync\", "),
+            "{clink}"
         );
 
         // With HOME=/ every path is "under home"; keep them absolute.

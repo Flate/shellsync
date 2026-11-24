@@ -17,7 +17,7 @@ use probe::Probe;
 use shell::{Checks, Shell};
 
 const USAGE: &str = "\
-shellsync - configure zsh, bash, nushell and PowerShell from one file
+shellsync - configure zsh, bash, nushell, PowerShell and cmd from one file
 
 Usage: shellsync <command> [options]
 
@@ -25,17 +25,18 @@ Commands:
   install          Create the config if missing, build, and hook into
                    ~/.zshenv, ~/.zshrc, ~/.bashrc, nushell's env.nu /
                    config.nu and PowerShell's profile.ps1 (on Windows also
-                   Windows PowerShell's, if it exists)
+                   Windows PowerShell's profile and clink's shellsync.lua,
+                   if their folders exist)
   uninstall        Remove the hooks (config and cache are kept)
   edit             Open the config in $VISUAL / $EDITOR (or run the config's
                    [edit] command instead), then rebuild
   build            Regenerate the shell files (shells do this automatically)
   check            Validate the config, and parse the generated code with
                    each shell (where installed)
-  print <shell>    Print the generated code for zsh, bash, nu, pwsh or
-                   powershell (Windows PowerShell 5.1)
+  print <shell>    Print the generated code for zsh, bash, nu, pwsh,
+                   powershell (Windows PowerShell 5.1) or cmd (clink)
   hook <file>      Print the hook for zshenv, zshrc, bashrc, nu-env, nu-config,
-                   pwsh or powershell
+                   pwsh, powershell or clink
   paths            Show the files shellsync reads and writes
 
 Options:
@@ -161,9 +162,9 @@ fn run(args: Vec<String>) -> Result {
     let shell_arg = |pos: &[String]| -> Result<Shell> {
         let s = pos
             .get(1)
-            .ok_or("expected a shell: zsh, bash, nu, pwsh or powershell")?;
+            .ok_or("expected a shell: zsh, bash, nu, pwsh, powershell or cmd")?;
         Shell::parse(s).ok_or_else(|| {
-            format!("unknown shell `{s}` (expected zsh, bash, nu, pwsh or powershell)")
+            format!("unknown shell `{s}` (expected zsh, bash, nu, pwsh, powershell or cmd)")
         })
     };
 
@@ -192,9 +193,9 @@ fn run(args: Vec<String>) -> Result {
             Ok(())
         }
         Some("hook") => {
-            let which = positional
-                .get(1)
-                .ok_or("expected zshenv, zshrc, bashrc, nu-env, nu-config, pwsh or powershell")?;
+            let which = positional.get(1).ok_or(
+                "expected zshenv, zshrc, bashrc, nu-env, nu-config, pwsh, powershell or clink",
+            )?;
             let kind = HookFile::parse(which).ok_or_else(|| format!("unknown hook `{which}`"))?;
             print!("{}", kind.block(&paths, &exe()?, &home()));
             Ok(())
@@ -446,7 +447,11 @@ fn parse_shell(
     // program that exits with 127, not with "not found". And on Windows,
     // `Command` would look in the system folders before PATH.
     let probe = Probe::from_env();
-    let Some(exe) = probe.find(sh, &probe.path_dirs()) else {
+    let exe = match shell {
+        Shell::Cmd => shell::cmd::find_clink(&probe),
+        _ => probe.find(sh, &probe.path_dirs()),
+    };
+    let Some(exe) = exe else {
         return Ok(None);
     };
     if shell == Shell::Bash && shell::bash::is_wsl_launcher(&exe) {
@@ -643,7 +648,7 @@ fn install(paths: &Paths, exe: &Path) -> Result {
     build(paths, false, None)?;
     writeln!(stdout, "built    {}", paths.out_dir.display()).ok();
     for (kind, file) in hooks::files() {
-        let changed = hooks::update_file(&file, &kind.block(paths, exe, &home()))?;
+        let changed = hooks::update_file(&file, kind, &kind.block(paths, exe, &home()))?;
         let verb = if changed { "hooked" } else { "ok" };
         writeln!(stdout, "{verb:<8} {}", file.display()).ok();
     }
@@ -656,8 +661,8 @@ fn install(paths: &Paths, exe: &Path) -> Result {
 }
 
 fn uninstall() -> Result {
-    for (_, file) in hooks::files() {
-        if hooks::update_file(&file, "")? {
+    for (kind, file) in hooks::files() {
+        if hooks::update_file(&file, kind, "")? {
             println!("unhooked {}", file.display());
         }
     }

@@ -1,10 +1,12 @@
 # shellsync
 
-Configure **zsh**, **bash**, **nushell** and **PowerShell** from one file.
+Configure **zsh**, **bash**, **nushell**, **PowerShell** and **cmd** (with
+clink) from one file.
 
 You write environment variables, PATH entries and aliases once, in
 `~/.config/shellsync/config.toml`. shellsync turns that file into native zsh,
-bash, nushell and PowerShell code and hooks it into each shell. After a one-time `install` you
+bash, nushell and PowerShell code, and Lua for cmd with clink, and hooks it
+into each shell. After a one-time `install` you
 don't run it yourself: edit the file and every new shell picks up the change.
 
 ```toml
@@ -51,7 +53,8 @@ copy `target/release/shellsync` onto your PATH.
 small marked block to `~/.zshenv` and `~/.zshrc` (or the ones in `$ZDOTDIR`)
 (not on Windows) and `~/.bashrc` (on Windows only if it exists, see below), to
 nushell's `env.nu` and `config.nu`, to PowerShell's `profile.ps1`, and on
-Windows to Windows PowerShell's `profile.ps1` if it exists (see below).
+Windows to Windows PowerShell's `profile.ps1` if it exists and to
+`shellsync.lua` in clink's profile folder if that exists (see below).
 Running it again is safe: the block
 is replaced, not duplicated. Paths under your home directory are written as
 `$HOME/...` or `~/...`, so the hooks still work if you sync your dotfiles to a
@@ -63,7 +66,7 @@ files as it was.
 **Dotfiles managed by a tool** such as chezmoi: `install` edits the files in
 place, which the tool would overwrite or report as changed. Instead, put the
 blocks into your templates. `shellsync hook zshenv` (and `zshrc`, `bashrc`,
-`nu-env`, `nu-config`, `pwsh`, `powershell`) prints each one; `--exe` sets where the binary is, for example
+`nu-env`, `nu-config`, `pwsh`, `powershell`, `clink`) prints each one; `--exe` sets where the binary is, for example
 `shellsync hook zshenv --exe ~/.local/bin/shellsync`, so the blocks don't
 depend on where shellsync ran when you printed them. If the tool also writes
 the config from a template, edits to `config.toml` itself are overwritten on
@@ -78,7 +81,7 @@ command = "chezmoi edit --apply ~/.config/shellsync/config.toml"
 
 * **Startup does almost nothing.** The hooks compare two file timestamps with
   the shell's own builtins (`[[ -nt ]]` in zsh and bash, `ls` in nushell, .NET
-  calls in PowerShell) and then
+  calls in PowerShell, clink's Lua functions in cmd) and then
   `source` a cached file. No extra process starts unless the config has
   changed (or, for nushell, a [tool](#conditional-entries) was installed or
   removed). Measured cost: about 2.5 ms for a whole interactive zsh start,
@@ -97,9 +100,10 @@ command = "chezmoi edit --apply ~/.config/shellsync/config.toml"
   loads the result.
 * **Output is plain shell code.** The generated files are in
   `~/.cache/shellsync/` (`env.zsh`, `init.zsh`, `init.bash`, `init.nu`,
-  `init.ps1`, `init-ps5.ps1` for Windows PowerShell, and `tools.nu` for
-  nushell's [tool checks](#conditional-entries)); `shellsync print zsh` (or
-  `bash`, `nu`, `pwsh`, `powershell`) shows them. Only your user can read them, since the
+  `init.ps1`, `init-ps5.ps1` for Windows PowerShell, `init.lua` for cmd, and
+  `tools.nu` for nushell's [tool checks](#conditional-entries));
+  `shellsync print zsh` (or `bash`, `nu`, `pwsh`, `powershell`, `cmd`) shows
+  them. Only your user can read them, since the
   config may contain secrets.
 * **Mistakes don't break your shell.** If the config has an error, the shell
   prints the error with its line number and keeps using the last good build.
@@ -176,8 +180,30 @@ If your config is a symlink, the hook can't compare its time on its own:
 .NET Framework can't resolve a link. It then runs `shellsync build
 --if-stale` at every start, which adds about 10 ms.
 
-**Windows**: nushell, PowerShell, Windows PowerShell and bash in Git Bash,
-MSYS2 or Cygwin are supported; zsh isn't. shellsync's own files are where they are on
+**cmd** needs [clink](https://chrisant996.github.io/clink/) 1.6.11 or later,
+which adds line editing to cmd and runs Lua scripts in it; cmd itself has no
+startup file that could define aliases. clink loads every Lua script in its
+profile folder, `%LOCALAPPDATA%\clink` (or `%CLINK_PROFILE%`), so `install`
+puts the hook there as `shellsync.lua`, if the folder exists (clink creates
+it when it first runs). The hook loads `init.lua`, which sets environment
+variables and PATH in cmd and turns aliases into doskey macros, with `$*` added
+for the arguments: `gs = "git status"` becomes the macro `git status $*`. So
+alias bodies are cmd command lines, and a per-shell value for cmd has the key
+`cmd`, while `[cmd] init` is Lua code that clink runs, such as a
+`clink.promptfilter`. doskey macros work at the prompt, not in batch files.
+
+clink loads its scripts when cmd shows the first prompt, after cmd's AutoRun
+commands and a `cmd /k` command, which therefore don't see these settings. The
+rebuild check runs then too; after a rebuild clink reloads its scripts, so the
+first prompt has the new settings. clink also loads scripts for `clink set`,
+where the hook only loads `init.lua` and never starts shellsync. clink reports
+file times in whole seconds, so, as with bash before 5, a config change in the
+same second as the previous build is picked up only with the next change. If
+your config is a symlink, clink sees the link's own time, so the hook runs
+`shellsync build --if-stale` at every start, which starts a process.
+
+**Windows**: nushell, PowerShell, Windows PowerShell, cmd with clink and bash
+in Git Bash, MSYS2 or Cygwin are supported; zsh isn't. shellsync's own files are where they are on
 other systems, under your user profile: `.config\shellsync\config.toml` and
 `.cache\shellsync\`. They get the profile folder's permissions (you,
 administrators and the system) instead of mode 0600. `install` asks
@@ -220,6 +246,7 @@ config in your user profile. Some things to know:
 | `[nu]`      | `init = '''...'''`: raw nushell code added at the end of the generated file.                                    |
 | `[pwsh]`    | `init = '''...'''`: raw PowerShell 7 code added at the end of the generated file.                               |
 | `[powershell]` | `init = '''...'''`: raw Windows PowerShell 5.1 code added at the end of the generated file.                  |
+| `[cmd]`     | `init = '''...'''`: raw Lua code for clink, added at the end of the generated file.                             |
 | `[sh]`      | `init = '''...'''`: raw code for zsh and bash, combined with `[zsh]` and `[bash] init` in file order.            |
 | `[ps]`      | `init = '''...'''`: raw code for both PowerShells, combined with `[pwsh]` and `[powershell] init` in file order. |
 | `[tool.X]`  | Any of the above that apply only where a tool is installed; see [Conditional entries](#conditional-entries).    |
@@ -237,7 +264,7 @@ shell starts, so `"$GOPATH/bin"` becomes `"${GOPATH}/bin"` in zsh and bash,
 special characters are escaped for each shell.
 
 **Per-shell values.** Any value can be a table:
-`{ zsh = "...", bash = "...", nu = "...", pwsh = "...", powershell = "..." }`.
+`{ zsh = "...", bash = "...", nu = "...", pwsh = "...", powershell = "...", cmd = "..." }`.
 If you leave out a shell, that entry is skipped there. For example,
 `ZSH_AUTOSUGGEST_STRATEGY = { zsh = "history" }` is set only in zsh. The key
 `sh` stands for every shell with POSIX sh syntax, zsh and bash; a shell's own
@@ -299,10 +326,10 @@ but not by its own `path` entries. To make a directory's commands depend on the
 directory, use `exists`.
 
 **When conditions are checked.** Every shell checks them each time it starts,
-so installing or removing a tool takes effect in the next shell. zsh, bash
-and PowerShell check them in the generated file, without starting a process
-(zsh and bash with builtins, PowerShell with .NET calls; ten tools add about
-12 ms there).
+so installing or removing a tool takes effect in the next shell. zsh, bash,
+PowerShell and cmd check them in the generated file, without starting a
+process (zsh and bash with builtins, PowerShell with .NET calls, cmd with
+clink's Lua functions; ten tools add about 12 ms in PowerShell).
 nushell defines aliases while
 it parses its config, before anything runs, so an alias can't depend on an
 `if`. Instead, the hook in `env.nu`, which runs first, checks the conditions
@@ -324,8 +351,8 @@ shellsync install        set up hooks (creates the config if missing)
 shellsync uninstall      remove hooks
 shellsync edit           open the config in $VISUAL/$EDITOR (or run [edit] command), then rebuild
 shellsync check          validate the config and parse the generated code
-shellsync print zsh|bash|nu|pwsh|powershell   show the generated code
-shellsync hook zshenv|zshrc|bashrc|nu-env|nu-config|pwsh|powershell   print a hook block, for manual setup
+shellsync print zsh|bash|nu|pwsh|powershell|cmd   show the generated code
+shellsync hook zshenv|zshrc|bashrc|nu-env|nu-config|pwsh|powershell|clink   print a hook block, for manual setup
 shellsync paths          show the files involved
 shellsync build          rebuild by hand (normally done automatically)
 ```
@@ -338,13 +365,16 @@ hooks. `--exe FILE` sets the binary the hooks run (default: the running one).
 
 **`check`** also hands the generated code to zsh (`zsh -n`), bash
 (`bash -n`), nushell (`nu-check`), PowerShell and, on Windows, Windows
-PowerShell (their parsers) to parse, without running it, so a typo in an alias or init
+PowerShell (their parsers) and clink (`clink lua`, for the Lua) to parse,
+without running it, so a typo in an alias or init
 block shows up before a shell trips over it. In nushell, a line that doesn't
 parse stops the whole config from loading, and some aliases that work in zsh
 don't parse there: nushell can't alias a pipeline (`ls -l | sort`). Errors
 name the config key they come from, such as `aliases.ll` or
 `tool.fzf.zsh.init`. Every `[tool]` table is checked, whether the tool is
-installed or not. A shell that isn't installed is skipped. `build` (and so
+installed or not. A shell that isn't installed is skipped. clink is looked
+for in the cmd it runs in, on PATH and in its default install folder; doskey
+macros themselves can't be checked. `build` (and so
 `edit` and the hooks) runs the same check on the code it is about to write,
 for the tools that apply on this machine, and keeps the last good build if
 it fails. The code is parsed from a folder inside the cache directory, not
@@ -357,7 +387,8 @@ there, so code that uses it doesn't parse; define it in `[nu] init` instead.
 ## Notes
 
 * Changes apply to **new** shells. In an already open zsh, run `exec zsh`
-  (in bash, `exec bash`).
+  (in bash, `exec bash`; in cmd with clink, press Ctrl-X Ctrl-R to reload
+  its scripts).
 * zsh reads `$ZDOTDIR/.zshenv` only if ZDOTDIR is set before zsh starts. If
   your `~/.zshenv` sets ZDOTDIR, have it source `$ZDOTDIR/.zshenv`, or put the
   `zshenv` block into `~/.zshenv` yourself.
@@ -373,7 +404,7 @@ there, so code that uses it doesn't parse; define it in `[nu] init` instead.
 
 ```sh
 cargo test     # unit tests, plus end-to-end tests that start real zsh / bash / nu / pwsh
-               # (and Windows PowerShell on Windows) in a temporary HOME
+               # (and Windows PowerShell and clink's Lua on Windows) in a temporary HOME
                # (skipped if a shell isn't installed)
 SHELLSYNC_REQUIRE_SHELLS=1 cargo test   # fail instead of skipping
 ```
@@ -389,7 +420,7 @@ cargo +stable-x86_64-pc-windows-gnu test
 GitLab CI (`.gitlab-ci.yml`) runs a secret scan, `cargo fmt --check` and
 `cargo clippy` (also for the Windows target), then the tests on Linux (zsh,
 bash 5, and pinned nushell and PowerShell releases), on a Windows runner tagged
-`windows` (with Git Bash, MSYS2, Cygwin and Windows PowerShell; once built with
+`windows` (with Git Bash, MSYS2, Cygwin, Windows PowerShell and clink; once built with
 the MSVC toolchain and once with the GNU one), and on a
 macOS runner tagged `macos` (with the system's bash 3.2).
 

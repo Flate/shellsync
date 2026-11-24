@@ -3,7 +3,8 @@
 //! installed, unless SHELLSYNC_REQUIRE_SHELLS is set (as in CI), where a
 //! missing shell fails. zsh isn't a Windows shell; there, bash means Git
 //! Bash, MSYS2 and Cygwin at their default locations (see
-//! `windows_bash_end_to_end`), and plain `zsh` and `bash` are skipped.
+//! `windows_bash_end_to_end`), and plain `zsh` and `bash` are skipped. cmd
+//! means cmd with clink, on Windows only; see [`CLINK_START`].
 //!
 //! Nothing is written outside each test's [`Sandbox`] directory: a test that
 //! runs `install` first checks with `shellsync paths` where it would write.
@@ -27,6 +28,35 @@ const WINDOWS_BASHES: [&str; 3] = [
     r"C:\msys64\usr\bin\bash.exe",
     r"C:\cygwin64\bin\bash.exe",
 ];
+
+/// What clink does when cmd starts, as far as its Lua interpreter, `clink
+/// lua`, which the tests run instead (clink only runs in an interactive
+/// console), lacks it: load the scripts (here the hook, `{hook}`), then send
+/// `onbeginedit`, and after `clink.reload()` load the scripts again.
+const CLINK_START: &str = r#"local reloads = 0
+clink.onbeginedit = function(f) f() end
+clink.reload = function() reloads = reloads + 1 end
+dofile([[{hook}]])
+if reloads > 0 then dofile([[{hook}]]) end
+if reloads > 1 then error("reloaded again") end
+"#;
+
+/// clink's executable, where its installer puts it.
+fn clink() -> Option<PathBuf> {
+    ["ProgramFiles(x86)", "ProgramFiles"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|dir| Path::new(&dir).join(r"clink\clink_x64.exe"))
+        .find(|exe| exe.is_file())
+}
+
+/// Code that prints `started`.
+fn echo_started(shell: &str) -> &'static str {
+    match shell {
+        "cmd" => "print('started')",
+        _ => "echo started",
+    }
+}
 
 /// A command that is on PATH on every machine.
 const ON_PATH: &str = if cfg!(windows) { "where" } else { "ls" };
@@ -75,15 +105,18 @@ fn has(shell: &str) -> bool {
     if cfg!(windows) && matches!(shell, "zsh" | "bash") {
         return false;
     }
-    // Windows PowerShell 5.1.
-    if !cfg!(windows) && shell == "powershell" {
+    // Windows PowerShell 5.1, and cmd with clink.
+    if !cfg!(windows) && matches!(shell, "powershell" | "cmd") {
         return false;
     }
-    let found = Command::new(shell)
-        .arg("-c")
-        .arg("exit 0")
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let found = match shell {
+        "cmd" => clink().is_some(),
+        _ => Command::new(shell)
+            .arg("-c")
+            .arg("exit 0")
+            .output()
+            .is_ok_and(|o| o.status.success()),
+    };
     if !found && std::env::var_os("SHELLSYNC_REQUIRE_SHELLS").is_some() {
         panic!("{shell} not installed, but SHELLSYNC_REQUIRE_SHELLS is set");
     }
@@ -180,7 +213,9 @@ impl Sandbox {
                 .env("SHELLSYNC_CONFIG", self.config())
                 .env("XDG_CACHE_HOME", self.dir.join(".cache"))
                 // nushell keeps its own files there.
-                .env("XDG_CONFIG_HOME", self.dir.join(".config"));
+                .env("XDG_CONFIG_HOME", self.dir.join(".config"))
+                // clink's profile folder, which `install` hooks if it exists.
+                .env("CLINK_PROFILE", self.dir.join("clink"));
         } else {
             c.env_clear()
                 .env("HOME", &self.dir)
@@ -193,6 +228,11 @@ impl Sandbox {
     /// Hooks `exe` in; see [`Sandbox`].
     fn install(&self, exe: &str) {
         if cfg!(windows) {
+            // As `install` creates a config before it builds, so the next
+            // edit is dated later than the build: clink compares whole seconds.
+            if !self.config().exists() {
+                self.edit_config("");
+            }
             run({
                 let mut c = self.cmd(BIN);
                 c.arg("build");
@@ -218,12 +258,13 @@ impl Sandbox {
     }
 
     /// Where the Windows sandbox keeps the hooks.
-    fn hook_files(&self) -> [(&'static str, PathBuf); 5] {
+    fn hook_files(&self) -> [(&'static str, PathBuf); 6] {
         [
             ("nu-env", self.dir.join("nu/env.nu")),
             ("nu-config", self.dir.join("nu/config.nu")),
             ("pwsh", self.dir.join("pwsh/profile.ps1")),
             ("bashrc", self.dir.join(".bashrc")),
+            ("clink", self.dir.join("clink/shellsync.lua")),
             ("powershell", self.dir.join("powershell/profile.ps1")),
         ]
     }
@@ -280,8 +321,19 @@ impl Sandbox {
 
     /// The shell, started the way a terminal starts it, running `code`.
     fn shell_cmd(&self, shell: &str, code: &str) -> Command {
-        let mut c = self.cmd(shell);
+        let program = match shell {
+            "cmd" => clink().unwrap().display().to_string(),
+            _ => shell.to_string(),
+        };
+        let mut c = self.cmd(&program);
         match shell {
+            "cmd" => {
+                let [.., (_, hook), _] = self.hook_files();
+                let start = self.dir.join("clink-start.lua");
+                let script = CLINK_START.replace("{hook}", &hook.display().to_string());
+                fs::write(&start, format!("{script}{code}\n")).unwrap();
+                c.arg("lua").arg(start);
+            }
             "nu" => {
                 let (env_nu, config_nu) = self.nu_files();
                 c.arg("--env-config").arg(env_nu);
@@ -755,6 +807,49 @@ fn powershell_end_to_end() {
     assert_eq!(lines[14], "228,32,8594,32,55358,56704");
 }
 
+/// cmd with clink, on Windows only. The hook runs in `clink lua`, see
+/// [`CLINK_START`]: without a previous build it builds, has clink reload, and
+/// the reloaded hook loads the result.
+#[test]
+fn cmd_end_to_end() {
+    if !has("cmd") {
+        eprintln!("clink not installed, skipping");
+        return;
+    }
+    let sb = Sandbox::installed();
+    fs::remove_dir_all(sb.out_dir()).unwrap();
+    let (out, err) = sb.shell(
+        "cmd",
+        r#"for _, name in ipairs({ "GOPATH", "TRICKY", "ONLY_ZSH", "PATH", "FROM_TOOL", "NOT_SET", "FOR_SH", "FOR_PS" }) do print(os.getenv(name) or "nil") end
+for _, name in ipairs({ "greet", "over", "missing_tool", "ll", ".." }) do print(os.getalias(name) or "nil") end"#,
+    );
+    assert_eq!(err, "");
+    let lines: Vec<&str> = out.lines().collect();
+    let h = sb.home.display();
+    assert_eq!(lines[0], format!("{h}/go"));
+    assert_eq!(lines[1], "it's \"q\" $x `y` (z) {w}");
+    assert_eq!(lines[2], "nil", "zsh only");
+    assert!(
+        lines[3].starts_with(&format!("{h}/go/bin;/usr/bin;")),
+        "{}",
+        lines[3]
+    );
+    assert!(lines[3].ends_with(";/opt/shellsync-test"), "{}", lines[3]);
+    assert_eq!(lines[3].matches(";/usr/bin;").count(), 1, "deduplicated");
+    assert_eq!(lines[4], "yes");
+    assert_eq!(lines[5], "nil", "path doesn't exist");
+    assert_eq!(lines[6], "nil", "`sh` doesn't cover cmd");
+    assert_eq!(lines[7], "nil", "`ps` doesn't cover cmd");
+    assert_eq!(lines[8], "echo hello $*");
+    assert_eq!(
+        lines[9], "echo tool $*",
+        "the [tool] alias overrides the base alias"
+    );
+    assert_eq!(lines[10], "nil", "tool not installed");
+    assert_eq!(lines[11], "nil", "no cmd value");
+    assert_eq!(lines[12], "cd .. $*", "an alias named ..");
+}
+
 /// A symlinked config (dotfiles linked into place) must not look changed at
 /// every start: the build stamps the outputs with the time of the file the
 /// link points to, so the hooks must compare that time, not the link's own.
@@ -867,13 +962,13 @@ fn check_parses_the_code_with_each_shell() {
     } else {
         "bash"
     };
-    // Windows PowerShell 5.1.
-    let ps5 = cfg!(windows);
+    // Windows PowerShell 5.1 and cmd with clink.
+    let windows = cfg!(windows);
     if (zsh && !has("zsh"))
         || !has(bash)
         || !has("nu")
         || !has("pwsh")
-        || (ps5 && !has("powershell"))
+        || (windows && (!has("powershell") || !has("cmd")))
     {
         eprintln!("a shell is not installed, skipping");
         return;
@@ -900,6 +995,7 @@ if true; then
 """
 pwsh.init = "if ($true) {"
 powershell.init = "if ($true) {"
+cmd.init = "if true then"
 "#;
     let (ok, out, err) = check(&sb, broken, &path);
     assert!(!ok);
@@ -911,9 +1007,13 @@ powershell.init = "if ($true) {"
         );
         assert!(out.contains("\n  tool.c.sh.init:3: parse error"), "{out}");
     } else {
-        assert_eq!(err, "shellsync: 5 parse errors\n");
+        assert_eq!(err, "shellsync: 6 parse errors\n");
         assert!(
             out.contains("\npowershell: 1 error\n  tool.c.powershell.init:1:"),
+            "{out}"
+        );
+        assert!(
+            out.contains("\ncmd: 1 error\n  tool.c.cmd.init:1: 'end' expected near <eof>\n"),
             "{out}"
         );
     }
@@ -946,12 +1046,16 @@ nu.init = "print $shared"
     } else {
         "bash: ok\n"
     };
-    let ps5_line = if ps5 { "powershell: ok\n" } else { "" };
+    let windows_lines = if windows {
+        "powershell: ok\ncmd: ok\n"
+    } else {
+        ""
+    };
     for config in [in_context, &config()] {
         let (ok, out, err) = check(&sb, config, &path);
         assert!(ok, "{out}{err}");
         assert!(
-            out.ends_with(&format!("\n{sh_lines}nu: ok\npwsh: ok\n{ps5_line}")),
+            out.ends_with(&format!("\n{sh_lines}nu: ok\npwsh: ok\n{windows_lines}")),
             "{out}"
         );
     }
@@ -992,6 +1096,7 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
         ("nu", "print $env.GOPATH"),
         ("pwsh", "$env:GOPATH"),
         ("powershell", "$env:GOPATH"),
+        ("cmd", "print(os.getenv('GOPATH'))"),
     ] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
@@ -1019,19 +1124,24 @@ fn edits_are_picked_up_and_errors_keep_last_good_config() {
         // So does valid TOML with code the shells can't parse; in nushell it
         // would stop the whole config from loading.
         sb.edit_config(
-            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { sh = \"echo 'open\", nu = \"ls | sort\", pwsh = \"echo (\", powershell = \"echo (\" }\n",
+            "[env]\nGOPATH = '/broken'\n[aliases]\nbad = { sh = \"echo 'open\", nu = \"ls | sort\", pwsh = \"echo (\", powershell = \"echo (\" }\n[cmd]\ninit = 'if'\n",
         );
         let (out, err) = sb.shell(sh, print);
         assert_eq!(out, "/elsewhere", "{sh}: {err}");
         assert!(err.contains("keep the last good build"), "{sh}: {err}");
-        assert!(err.contains("aliases.bad"), "{sh}: {err}");
+        let key = if sh == "cmd" {
+            "cmd.init"
+        } else {
+            "aliases.bad"
+        };
+        assert!(err.contains(key), "{sh}: {err}");
 
         sb.edit_config("[env]\nGOPATH = '/fixed'\n");
         assert_eq!(sb.shell(sh, print).0, "/fixed", "{sh}");
 
         // Even with no previous build, the shell still starts.
         fs::remove_dir_all(sb.out_dir()).unwrap();
-        let (out, err) = sb.shell(sh, "echo started");
+        let (out, err) = sb.shell(sh, echo_started(sh));
         assert_eq!(out, "started", "{sh}: {err}");
     }
 }
@@ -1115,7 +1225,7 @@ fn edit_runs_the_editor_or_the_configured_command() {
 /// missing or has moved. Shells must still start, without error output.
 #[test]
 fn shells_start_quietly_without_the_binary() {
-    for sh in ["zsh", "bash", "nu", "pwsh", "powershell"] {
+    for sh in ["zsh", "bash", "nu", "pwsh", "powershell", "cmd"] {
         if !has(sh) {
             eprintln!("{sh} not installed, skipping");
             continue;
@@ -1128,7 +1238,7 @@ fn shells_start_quietly_without_the_binary() {
         fs::remove_file(&exe).unwrap();
         fs::remove_dir_all(sb.out_dir()).unwrap();
 
-        let (out, err) = sb.shell(sh, "echo started");
+        let (out, err) = sb.shell(sh, echo_started(sh));
         assert_eq!(out, "started", "{sh}: {err}");
         assert_eq!(err, "", "{sh}");
     }
@@ -1152,30 +1262,38 @@ fn install_is_idempotent_and_uninstall_restores() {
         run(c)
     };
     // On Windows, `.bashrc` and Windows PowerShell's profile are hooked only
-    // if they exist. (Windows PowerShell finds no Documents folder in the
-    // sandbox, so shellsync falls back to the one in USERPROFILE.)
+    // if they exist, clink's script only if its folder does (CLINK_PROFILE,
+    // see `Sandbox::cmd`). (Windows PowerShell finds no Documents folder in
+    // the sandbox, so shellsync falls back to the one in USERPROFILE.)
     let bashrc = sb.dir.join(".bashrc");
     let ps5_profile = sb.dir.join(r"Documents\WindowsPowerShell\profile.ps1");
+    let clink_script = sb.dir.join(r"clink\shellsync.lua");
     if cfg!(windows) {
         fs::write(&bashrc, "# mine\n").unwrap();
         fs::create_dir_all(ps5_profile.parent().unwrap()).unwrap();
         fs::write(&ps5_profile, "# mine too\n").unwrap();
+        fs::create_dir_all(clink_script.parent().unwrap()).unwrap();
+        fs::write(&clink_script, "-- mine as well\n").unwrap();
     }
     let hooks: Vec<(String, PathBuf)> = sb
         .assert_inside(&shellsync("paths"))
         .into_iter()
         .filter(|(name, _)| {
-            ["zsh", "bash", "nu ", "pwsh", "ps5"]
+            ["zsh", "bash", "nu ", "pwsh", "ps5", "clink"]
                 .iter()
                 .any(|s| name.starts_with(s))
         })
         .collect();
-    let expected = if cfg!(windows) { 5 } else { 6 };
-    assert_eq!(hooks.len(), expected, "{hooks:?}");
+    // On Windows no zsh, but Windows PowerShell and clink.
+    assert_eq!(hooks.len(), 6, "{hooks:?}");
     if cfg!(windows) {
-        assert_eq!(
-            hooks.last().unwrap(),
-            &("ps5 profile".into(), ps5_profile.clone())
+        assert!(
+            hooks.contains(&("ps5 profile".into(), ps5_profile.clone())),
+            "{hooks:?}"
+        );
+        assert!(
+            hooks.contains(&("clink script".into(), clink_script.clone())),
+            "{hooks:?}"
         );
     }
     let profile = &hooks
@@ -1206,6 +1324,10 @@ fn install_is_idempotent_and_uninstall_restores() {
     if cfg!(windows) {
         assert_eq!(fs::read_to_string(&bashrc).unwrap(), "# mine\n");
         assert_eq!(fs::read_to_string(&ps5_profile).unwrap(), "# mine too\n");
+        assert_eq!(
+            fs::read_to_string(&clink_script).unwrap(),
+            "-- mine as well\n"
+        );
     }
     for text in read() {
         assert!(!text.contains("shellsync"));

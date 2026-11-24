@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Release binaries and `SHA256SUMS` are also published as GitHub releases on the mirror, https://github.com/Flate/shellsync
+- cmd with clink (1.6.11 or later): `cmd` key in per-shell values, `[cmd] init` section (Lua), generated `init.lua`, `shellsync print cmd` and `shellsync hook clink`; on Windows, `install` hooks `shellsync.lua` in clink's profile folder if it exists, and `build` and `check` parse the Lua with `clink lua`
 
 ## [0.2.0] - 2026-11-23
 

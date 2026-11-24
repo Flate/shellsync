@@ -526,14 +526,14 @@ mod tests {
         assert!(e("[env]\n\"BAD-NAME\" = 'x'").starts_with("env.BAD-NAME"));
         assert_eq!(
             e("[env]\nX = { fish = 'x' }"),
-            "env.X.fish: unknown key (expected `sh`, `ps`, `zsh`, `bash`, `nu`, `pwsh` or `powershell`)"
+            "env.X.fish: unknown key (expected `sh`, `ps`, `zsh`, `bash`, `nu`, `pwsh`, `powershell` or `cmd`)"
         );
         assert!(e("[aliases]\nx = { sh = ' ' }").contains("empty"));
         assert!(e("[path]\nprepend = [1]").starts_with("path.prepend[0]"));
         assert!(e("[aliases]\nx = ''").contains("empty"));
         assert_eq!(
             e("[bogus]"),
-            "unknown section `bogus` (expected env, path, aliases, tool, edit, sh, ps, zsh, bash, nu, pwsh or powershell)"
+            "unknown section `bogus` (expected env, path, aliases, tool, edit, sh, ps, zsh, bash, nu, pwsh, powershell or cmd)"
         );
         assert_eq!(
             e("[edit]\neditor = 'x'"),
@@ -546,7 +546,7 @@ mod tests {
         assert!(e("[env\n").contains("line 1"));
         assert_eq!(
             e("[tool.eza]\nfoo = 1"),
-            "tool.eza.foo: unknown key (expected command, exists, env, path, aliases, sh, ps, zsh, bash, nu, pwsh or powershell)"
+            "tool.eza.foo: unknown key (expected command, exists, env, path, aliases, sh, ps, zsh, bash, nu, pwsh, powershell or cmd)"
         );
         assert!(e("[tool.eza.env]\n\"BAD-NAME\" = 'x'").starts_with("tool.eza.env.BAD-NAME"));
         assert!(e("[tool.eza.aliases]\nx = { fish = 'x' }").starts_with("tool.eza.aliases.x.fish"));
