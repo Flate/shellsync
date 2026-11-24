@@ -103,7 +103,8 @@ test:macos:
 
 # Runs on a Windows machine (shell executor, PowerShell) with Rust, nushell,
 # PowerShell, Git for Windows, MSYS2 and Cygwin installed machine-wide (not
-# pinned). The tests use the three bash at their default locations.
+# pinned). The tests use the three bash at their default locations. The cache key
+# uses the slug, since the local cache is a path and `:` isn't allowed in it.
 test:windows:
   stage: test
   tags:
@@ -112,7 +113,7 @@ test:windows:
     SHELLSYNC_REQUIRE_SHELLS: "1"
   cache:
     key:
-      prefix: $CI_JOB_NAME
+      prefix: $CI_JOB_NAME_SLUG
       files:
         - Cargo.lock
     paths:
@@ -143,7 +144,7 @@ test:windows-gnu:
     TOOLCHAIN: 1.100.0-x86_64-pc-windows-gnu
   cache:
     key:
-      prefix: $CI_JOB_NAME
+      prefix: $CI_JOB_NAME_SLUG
       files:
         - Cargo.lock
     paths:
