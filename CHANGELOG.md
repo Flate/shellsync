@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Release binaries and `SHA256SUMS` are also published as GitHub releases on the mirror, https://github.com/Flate/shellsync
+
 ## [0.2.0] - 2026-11-23
 
 ### Added

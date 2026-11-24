@@ -24,8 +24,9 @@ ll = { sh = "ls -lh", nu = "ls -l" }   # different per shell
 ## Install
 
 Download the binary for your platform and `SHA256SUMS` from the
-[releases](https://git.flatenet.de/flate/shellsync/-/releases), check it, and
-put it on your PATH as `shellsync`. For example, on a Mac:
+[releases](https://git.flatenet.de/flate/shellsync/-/releases) (or the same
+files from the [GitHub releases](https://github.com/Flate/shellsync/releases)),
+check it, and put it on your PATH as `shellsync`. For example, on a Mac:
 
 ```sh
 shasum -a 256 --check --ignore-missing SHA256SUMS   # Linux: sha256sum --check --ignore-missing SHA256SUMS
@@ -394,10 +395,18 @@ To release a version:
    `v*` under Settings > Repository > Protected tags). The tag pipeline runs the
    tests, builds the binaries, uploads them with `SHA256SUMS` to the project's
    package registry (package `shellsync`, version `X.Y.Z`) and creates the
-   GitLab release with the changelog section as its notes.
+   GitLab release with the changelog section as its notes. `release:github`
+   then waits for the push mirror to bring the tag to GitHub and creates the
+   same release there.
+
+`release:github` needs a CI/CD variable `GITHUB_TOKEN` (protected, masked): a
+fine-grained GitHub token for the mirror repository only, with "Contents: Read
+and write". The repository is set in `GITHUB_REPOSITORY` in `.gitlab-ci.yml`.
 
 Re-running a release job is safe: files already uploaded are kept, and a
 release job that would replace one with different contents fails instead.
+A GitHub release is created as a draft and published once all files are
+uploaded.
 
 ## License
 
