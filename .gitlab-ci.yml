@@ -207,3 +207,21 @@ release:
     - apt-get update
     - apt-get install -y --no-install-recommends ca-certificates curl jq
     - ci/release.sh publish $RELEASE_ARGS
+
+# The same binaries on the GitHub mirror's release. A job of its own, so the
+# GitLab release doesn't depend on GitHub and this can be re-run alone. It
+# waits for the push mirror to bring the tag over. GITHUB_TOKEN is a protected,
+# masked CI/CD variable: a fine-grained token for this repository only, with
+# "Contents: Read and write".
+release:github:
+  extends: [.rust, .release]
+  stage: release
+  cache: []
+  needs: [build:linux, build:macos, build:windows, release]
+  variables:
+    DEBIAN_FRONTEND: noninteractive
+    GITHUB_REPOSITORY: Flate/shellsync
+  script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends ca-certificates curl jq
+    - ci/release.sh github $RELEASE_ARGS
